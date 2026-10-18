@@ -27,6 +27,7 @@ Cargo.lock
 
 # CI/local BoringSSL checkout and build extracted into the worktree
 /boringssl/
+/boringssl.tar.gz
 
 # development files
 hex.txt
