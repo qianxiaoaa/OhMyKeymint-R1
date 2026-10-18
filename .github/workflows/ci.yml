@@ -179,6 +179,7 @@ jobs:
       id: prepareArtifact
       env:
         BORINGSSL_BUILD_DIR: ${{ github.workspace }}/boringssl/build
+        OMK_VERSION_CODE: ${{ vars.OMK_VERSION_CODE || '100' }}
       run: |
         unset RUSTFLAGS
         python build.py --${{ matrix.build-type }}
