@@ -25,6 +25,9 @@ Cargo.lock
 # host build artifact
 /rust_out.exe
 
+# CI/local BoringSSL checkout and build extracted into the worktree
+/boringssl/
+
 # development files
 hex.txt
 parcel.bin
