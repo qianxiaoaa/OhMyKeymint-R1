@@ -2,7 +2,7 @@
 
 Thank you for improving OhMyKeymint. Before submitting a change, read the
 [FAQ](FAQ.md), search the existing
-[issues](https://github.com/qwq233/OhMyKeymint/issues), and follow the technical
+[issues](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues), and follow the technical
 invariants in [AGENTS.md](../AGENTS.md). Discuss substantial features or behavior
 changes in an issue first.
 
@@ -129,6 +129,28 @@ optimization, LTO and symbol stripping. The log4rs dependency enables only
 console and pattern encoding; OMK's shared rotating-file logger handles file
 output without log4rs configuration-file parsers or built-in rolling appenders.
 
+### Releases and the update chain
+
+Releases are tag-driven: pushing a `v*` tag runs the CI workflow, which builds
+the release package and publishes a GitHub release whose title matches the
+archive identity. The publishing job refuses to run without `secrets.PAT`, so a
+release is never attributed to a bot account; configure the repository secret
+`PAT` with a personal access token that has `contents: write`.
+
+After a release is published, the changelog workflow rewrites the `changelog`
+branch with `changelog.md` and `update.json` — the feed referenced by the
+`updateJson` line in `module.prop` — and reads the authoritative `versionCode`
+from the released package itself. Optional repository variables:
+`OMK_TARGET_REPO` mirrors the changelog branch, tag, and release assets to
+another repository, `OMK_TARGET_BRANCH` selects that repository's branch
+(default `master`), and `OMK_AUTHOR_NAME` / `OMK_AUTHOR_EMAIL` override the
+changelog commit identity (the defaults are the author's name and noreply
+address, never a bot).
+
+Raise `OMK_VERSION_CODE` above the value installed on devices when a release
+should prompt an update; the manager compares `update.json` against the
+installed `versionCode`.
+
 Rust changes must pass:
 
 ```sh
@@ -158,7 +180,7 @@ have a concrete, documented reason and direct maintainer approval.
 
 ## Commits and pull requests
 
-- Target pull requests at `master`.
+- Target pull requests at `main`.
 - Use `type(scope): concise summary` for commit titles; the scope is optional.
   Common types are `fix`, `feat`, `refactor`, `docs`, `test`, `ci`, and `chore`.
 - Keep the title concise. Use the body to explain the problem, root cause,

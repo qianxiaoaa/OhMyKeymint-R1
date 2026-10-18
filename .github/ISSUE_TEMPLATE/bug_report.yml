@@ -7,7 +7,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Read the [FAQ](https://github.com/qwq233/OhMyKeymint/blob/master/docs/FAQ.md) and search existing issues first. A report without an identifiable build, relevant configuration, and matching logs usually cannot be diagnosed.
+        Read the [FAQ](https://github.com/qianxiaoaa/OhMyKeymint-R1/blob/main/docs/FAQ.md) and search existing issues first. A report without an identifiable build, relevant configuration, and matching logs usually cannot be diagnosed.
 
   - type: checkboxes
     id: preflight

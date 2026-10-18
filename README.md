@@ -1,6 +1,6 @@
-# Oh My Keymint（第三方版本）
+# Oh My Keymint-R1（二改版本）
 
-> 本仓库是基于 [qwq233/OhMyKeymint](https://github.com/qwq233/OhMyKeymint) 修改的第三方版本，**不是官方版本，也不代表上游维护者**。本版本的问题请反馈至[本仓库](https://github.com/ITxiao6666/OhMyKeymint/issues)。
+> 本仓库是基于 [ITxiao6666/OhMyKeymint](https://github.com/ITxiao6666/OhMyKeymint)（其上游为 [qwq233/OhMyKeymint](https://github.com/qwq233/OhMyKeymint)）修改的第三方版本，**不是官方版本，也不代表上游维护者**。本版本的问题请反馈至[本仓库](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues)。
 
 面向 Android 的自定义 Keystore / KeyMint 实现，提供应用配置、Keybox 管理及配套 WebUI。
 
@@ -8,7 +8,7 @@
 
 需要 **Android 12 及以上**，以及 KernelSU 或 Magisk。
 
-1. 从本仓库的 [Releases](https://github.com/ITxiao6666/OhMyKeymint/releases) 下载并安装模块。
+1. 从本仓库的 [Releases](https://github.com/qianxiaoaa/OhMyKeymint-R1/releases) 下载并安装模块。
 2. 打开 WebUI，选择需要使用 OMK 的应用，按需导入 Keybox。
 3. 高级设置及生效条件请参阅[配置指南](docs/CONFIGURATION.md)。
 

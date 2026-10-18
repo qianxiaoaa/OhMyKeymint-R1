@@ -4,14 +4,14 @@ on:
   push:
     tags:
       - 'v*'
-    branches: [ "master" ]
+    branches: [ "main" ]
     paths-ignore:
       - '**.md'
       - '**.txt'
       - '.github/**'
       - '!.github/workflows/**'
   pull_request:
-    branches: [ "master" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:

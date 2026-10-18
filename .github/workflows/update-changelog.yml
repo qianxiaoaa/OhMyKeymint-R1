@@ -16,12 +16,13 @@ jobs:
       TARGET_REPO: ${{ vars.OMK_TARGET_REPO }}
       AUTHOR_NAME: ${{ vars.OMK_AUTHOR_NAME || '浅笑呐' }}
       AUTHOR_EMAIL: ${{ vars.OMK_AUTHOR_EMAIL || 'qianxiaoaa@users.noreply.github.com' }}
+      TARGET_BRANCH: ${{ vars.OMK_TARGET_BRANCH || 'master' }}
 
     steps:
-      - name: Checkout repository (master)
+      - name: Checkout repository (main)
         uses: actions/checkout@v7
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.PAT }}
 
@@ -190,7 +191,7 @@ jobs:
 
           git remote remove target 2>/dev/null || true
           git remote add target "$target_url"
-          git push target "$sync_commit:refs/heads/master" --force
+          git push target "$sync_commit:refs/heads/$TARGET_BRANCH" --force
 
           release_json="$RUNNER_TEMP/target-release.json"
           find_target_release() {
@@ -260,7 +261,7 @@ jobs:
 
           jq -n \
             --arg tag_name "$tag_name" \
-            --arg target_commitish "master" \
+            --arg target_commitish "$TARGET_BRANCH" \
             --arg name "$release_name" \
             --arg body "$release_body" \
             --argjson draft true \
