@@ -1,0 +1,119 @@
+name: Bug report
+description: Report a reproducible OhMyKeymint defect
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the [FAQ](https://github.com/qwq233/OhMyKeymint/blob/master/docs/FAQ.md) and search existing issues first. A report without an identifiable build, relevant configuration, and matching logs usually cannot be diagnosed.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I kept the required `[Bug]` prefix and added a specific title after it.
+          required: true
+        - label: I read the FAQ and found no issue reporting the same problem.
+          required: true
+        - label: I reproduced this on a current release or an identifiable build, or explained below why I could not.
+          required: true
+        - label: This is not caused by deliberately relaxing filters to intercept Android, system, or core callers; that configuration is outside the support scope.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OhMyKeymint version
+      description: Provide the full release tag or build identity from the logs; do not write only "latest".
+      placeholder: release tag or build identity
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide Android, ROM, kernel, root framework/version, and ABI. Do not provide a device serial.
+      placeholder: |
+        Android:
+        ROM/build:
+        Kernel:
+        Root framework/version:
+        ABI:
+    validations:
+      required: true
+
+  - type: input
+    id: package
+    attributes:
+      label: Affected package
+      description: Enter N/A if the problem is not package-specific.
+      placeholder: com.example.app
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      render: toml
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the shortest reliable reproduction. For routing problems, include a same-build routed/unrouted comparison when possible.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include exact error codes, frequency, and the reproduction time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: keymint_log
+    attributes:
+      label: KeyMint log
+      description: Attach `/data/misc/keystore/omk/logs/keymint.log` from the same reproduction. If it is unavailable, explain why. Redact all sensitive data before uploading.
+    validations:
+      required: true
+
+  - type: textarea
+    id: injector_log
+    attributes:
+      label: Injector log
+      description: Attach `/data/misc/keystore/omk/logs/injector.log` from the same reproduction. If it is unavailable, explain why. Redact all sensitive data before uploading.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logcat_output
+    attributes:
+      label: Logcat output
+      description: Attach the matching `logcat -d -s OhMyKeymint` output. If it is unavailable, explain why. Redact all sensitive data before uploading.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add a minimal sample, a regression comparison, or other direct evidence if available.

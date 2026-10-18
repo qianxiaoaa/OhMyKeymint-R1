@@ -1,0 +1,647 @@
+use std::sync::OnceLock;
+
+use anyhow::{anyhow, bail, Context, Result};
+use kmr_common::crypto::Sha256;
+use kmr_crypto_boring::sha256::BoringSha256;
+use rsbinder::{hub, Strong};
+
+use super::resetprop;
+use crate::android::hardware::security::keymint::{
+    IKeyMintDevice::IKeyMintDevice, KeyMintHardwareInfo::KeyMintHardwareInfo,
+    SecurityLevel::SecurityLevel,
+};
+use crate::keymaster::utils::get_interface_once;
+
+const KEYMINT_V1: i32 = 100;
+const KEYMINT_V2: i32 = 200;
+const KEYMINT_V3: i32 = 300;
+const KEYMINT_V4: i32 = 400;
+const KEYMINT_V5: i32 = 500;
+const KEYMINT_HAL_NAME: &str = "android.hardware.security.keymint";
+const KEYMINT_DEVICE_INTERFACE: &str = "IKeyMintDevice";
+const AOSP_AUTHOR_NAME: &str = "The Android Open Source Project";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyMintHardwareProfile {
+    pub version_number: i32,
+    pub impl_name: String,
+    pub author_name: String,
+    pub unique_id: String,
+}
+
+pub(crate) fn strongbox_keymint_present() -> bool {
+    static STRONGBOX_PRESENT: OnceLock<bool> = OnceLock::new();
+    *STRONGBOX_PRESENT.get_or_init(detect_strongbox_keymint_present)
+}
+
+pub(crate) fn resolve_hardware_profile(security_level: SecurityLevel) -> KeyMintHardwareProfile {
+    let version_number = probe_keymint_version_from_vintf(security_level)
+        .unwrap_or_else(fallback_keymint_version_from_android);
+
+    if let Some(profile) = crate::pif_spoof::aligned_identity()
+        .ok()
+        .flatten()
+        .and_then(|identity| profile_from_pif_identity(&identity, security_level, version_number))
+    {
+        return profile;
+    }
+
+    if let Some(profile) = resolve_property_profile_with(
+        security_level,
+        version_number,
+        resetprop::read_string_property,
+    ) {
+        return profile;
+    }
+
+    match probe_system_keymint_hardware_info(security_level)
+        .and_then(|info| profile_from_system_hardware_info(&info, security_level, version_number))
+    {
+        Ok(profile) => profile,
+        Err(error) => {
+            log::warn!("failed to resolve dynamic KeyMint hardware profile: {error:#}");
+            fallback_profile(security_level, version_number)
+        }
+    }
+}
+
+/// While PIF spoofing is active the reported KeyMint hardware identity follows
+/// the spoofed device instead of the real ro.product.* values, keeping
+/// getHardwareInfo consistent with the aligned attestation IDs.
+fn profile_from_pif_identity(
+    identity: &crate::pif_spoof::PifIdentity,
+    security_level: SecurityLevel,
+    version_number: i32,
+) -> Option<KeyMintHardwareProfile> {
+    let author_name = clean_dynamic_value(identity.manufacturer.clone())?;
+    let identity_name = clean_dynamic_value(identity.device.clone())
+        .or_else(|| clean_dynamic_value(identity.model.clone()))
+        .or_else(|| clean_dynamic_value(identity.brand.clone()));
+    let impl_name = build_impl_name(&author_name, identity_name.as_deref(), security_level);
+    let unique_id = derive_unique_id(&author_name, &impl_name, security_level, version_number)?;
+    Some(KeyMintHardwareProfile {
+        version_number,
+        impl_name,
+        author_name,
+        unique_id,
+    })
+}
+
+fn detect_strongbox_keymint_present() -> bool {
+    let security_level = SecurityLevel::STRONGBOX;
+    if system_keymint_service_name(security_level).is_some_and(|service| {
+        hub::is_declared(service) || keymint_instance_declared_in_vintf(security_level)
+    }) {
+        return true;
+    }
+
+    match probe_system_keymint_hardware_info(security_level)
+        .and_then(|info| ensure_system_hardware_security_level(&info, security_level))
+    {
+        Ok(_) => true,
+        Err(error) => {
+            log::info!("optional StrongBox KeyMint HAL is not present: {error:#}");
+            false
+        }
+    }
+}
+
+fn resolve_property_profile_with(
+    security_level: SecurityLevel,
+    version_number: i32,
+    read_property: impl Fn(&str) -> Option<String>,
+) -> Option<KeyMintHardwareProfile> {
+    ["ro.product.vendor.", "ro.product."]
+        .into_iter()
+        .find_map(|prefix| {
+            resolve_property_profile_from_namespace(
+                prefix,
+                security_level,
+                version_number,
+                &read_property,
+            )
+        })
+}
+
+fn resolve_property_profile_from_namespace(
+    prefix: &str,
+    security_level: SecurityLevel,
+    version_number: i32,
+    read_property: &impl Fn(&str) -> Option<String>,
+) -> Option<KeyMintHardwareProfile> {
+    let manufacturer = product_property(prefix, "manufacturer", read_property);
+    let brand = product_property(prefix, "brand", read_property);
+    let model = product_property(prefix, "model", read_property);
+    let device = product_property(prefix, "device", read_property);
+    let name = product_property(prefix, "name", read_property);
+
+    let author_name = manufacturer.as_deref().or(brand.as_deref())?.to_string();
+    let identity = device
+        .as_deref()
+        .or(name.as_deref())
+        .or(model.as_deref())
+        .or(brand.as_deref());
+    let impl_name = build_impl_name(&author_name, identity, security_level);
+    let unique_id = derive_unique_id(&author_name, &impl_name, security_level, version_number)?;
+
+    Some(KeyMintHardwareProfile {
+        version_number,
+        impl_name,
+        author_name,
+        unique_id,
+    })
+}
+
+fn product_property(
+    prefix: &str,
+    name: &str,
+    read_property: &impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    read_property(&format!("{prefix}{name}")).and_then(clean_dynamic_value)
+}
+
+fn clean_dynamic_value(value: String) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let lower = value.to_ascii_lowercase();
+    if matches!(lower.as_str(), "unknown" | "unavailable" | "null" | "n/a") {
+        return None;
+    }
+
+    Some(value.to_string())
+}
+
+fn build_impl_name(
+    author_name: &str,
+    identity: Option<&str>,
+    security_level: SecurityLevel,
+) -> String {
+    let mut parts = vec![author_name.to_string()];
+    if let Some(identity) = identity {
+        if !identity
+            .get(..author_name.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(author_name))
+        {
+            parts.push(identity.to_string());
+        }
+    }
+    parts.push(security_level_label(security_level).to_string());
+    parts.push("KeyMint".to_string());
+    parts.join(" ")
+}
+
+fn probe_system_keymint_hardware_info(
+    security_level: SecurityLevel,
+) -> Result<KeyMintHardwareInfo> {
+    let service = system_keymint_service_name(security_level)
+        .ok_or_else(|| anyhow!("unsupported security level for system KeyMint probe"))?;
+    let keymint: Strong<dyn IKeyMintDevice> =
+        get_interface_once(service).with_context(|| format!("connect {service}"))?;
+    if keymint.as_binder().as_proxy().is_none() {
+        bail!("system KeyMint service {service} resolved to a local binder");
+    }
+
+    let info = keymint
+        .getHardwareInfo()
+        .map_err(|status| anyhow!("getHardwareInfo from {service} failed: {status}"))?;
+    Ok(info)
+}
+
+/// Read the actual AIDL HAL without synthesizing a property-based profile.
+/// A missing optional service is distinct from a registered but faulty HAL.
+pub(crate) fn diagnose_system_keymint(
+    security_level: SecurityLevel,
+) -> Result<Option<KeyMintHardwareInfo>> {
+    let service = system_keymint_service_name(security_level)
+        .ok_or_else(|| anyhow!("unsupported security level for system KeyMint probe"))?;
+    if hub::try_get_service(service)?.is_none() {
+        return Ok(None);
+    }
+    let info = probe_system_keymint_hardware_info(security_level)?;
+    ensure_system_hardware_security_level(&info, security_level)?;
+    Ok(Some(info))
+}
+
+fn profile_from_system_hardware_info(
+    info: &KeyMintHardwareInfo,
+    security_level: SecurityLevel,
+    version_number: i32,
+) -> Result<KeyMintHardwareProfile> {
+    ensure_system_hardware_security_level(info, security_level)?;
+
+    let impl_name = clean_dynamic_value(info.keyMintName.clone())
+        .ok_or_else(|| anyhow!("system KeyMint returned an empty implementation name"))?;
+    let author_name = clean_dynamic_value(info.keyMintAuthorName.clone())
+        .ok_or_else(|| anyhow!("system KeyMint returned an empty author name"))?;
+    let unique_id = derive_unique_id(&author_name, &impl_name, security_level, version_number)
+        .ok_or_else(|| anyhow!("failed to derive KeyMint unique id"))?;
+
+    Ok(KeyMintHardwareProfile {
+        version_number,
+        impl_name,
+        author_name,
+        unique_id,
+    })
+}
+
+fn ensure_system_hardware_security_level(
+    info: &KeyMintHardwareInfo,
+    security_level: SecurityLevel,
+) -> Result<()> {
+    if info.securityLevel != security_level {
+        bail!(
+            "system KeyMint security level mismatch: expected {:?}, got {:?}",
+            security_level,
+            info.securityLevel
+        );
+    }
+
+    Ok(())
+}
+
+fn system_keymint_service_name(security_level: SecurityLevel) -> Option<&'static str> {
+    match security_level {
+        SecurityLevel::TRUSTED_ENVIRONMENT => {
+            Some("android.hardware.security.keymint.IKeyMintDevice/default")
+        }
+        SecurityLevel::STRONGBOX => {
+            Some("android.hardware.security.keymint.IKeyMintDevice/strongbox")
+        }
+        _ => None,
+    }
+}
+
+fn probe_keymint_version_from_vintf(security_level: SecurityLevel) -> Option<i32> {
+    let instance = security_level_instance(security_level)?;
+    match kmr_common::vintf::resolve_aidl_hal_version(
+        kmr_common::vintf::ManifestKind::Device,
+        KEYMINT_HAL_NAME,
+        KEYMINT_DEVICE_INTERFACE,
+        instance,
+    ) {
+        Ok(Some(version)) => normalize_keymint_version(version).or_else(|| {
+            log::warn!("unsupported KeyMint AIDL version {version} resolved from VINTF");
+            None
+        }),
+        Ok(None) => None,
+        Err(error) => {
+            log::warn!("failed to resolve KeyMint AIDL version from VINTF: {error:#}");
+            None
+        }
+    }
+}
+
+fn keymint_instance_declared_in_vintf(security_level: SecurityLevel) -> bool {
+    let Some(instance) = security_level_instance(security_level) else {
+        return false;
+    };
+    match kmr_common::vintf::resolve_aidl_hal_version(
+        kmr_common::vintf::ManifestKind::Device,
+        KEYMINT_HAL_NAME,
+        KEYMINT_DEVICE_INTERFACE,
+        instance,
+    ) {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        Err(error) => {
+            log::warn!("failed to resolve KeyMint instance from VINTF: {error:#}");
+            false
+        }
+    }
+}
+
+fn fallback_keymint_version_from_android() -> i32 {
+    match kmr_common::android_version::android_major_version() {
+        Some(version) if version >= 17 => KEYMINT_V5,
+        Some(16) => KEYMINT_V4,
+        Some(14 | 15) => KEYMINT_V3,
+        Some(13) => KEYMINT_V2,
+        Some(12) => KEYMINT_V1,
+        _ => KEYMINT_V4,
+    }
+}
+
+fn normalize_keymint_version(version: i32) -> Option<i32> {
+    match version {
+        1..=5 => Some(version * 100),
+        KEYMINT_V1 | KEYMINT_V2 | KEYMINT_V3 | KEYMINT_V4 | KEYMINT_V5 => Some(version),
+        _ => None,
+    }
+}
+
+fn fallback_profile(security_level: SecurityLevel, version_number: i32) -> KeyMintHardwareProfile {
+    let line = version_number / 100;
+    let sec_label = security_level_label(security_level);
+    KeyMintHardwareProfile {
+        version_number,
+        impl_name: format!("Android {sec_label} KeyMint {line}"),
+        author_name: AOSP_AUTHOR_NAME.to_string(),
+        unique_id: format!("android-{sec_label}-keymint-{line}"),
+    }
+}
+
+fn derive_unique_id(
+    author_name: &str,
+    impl_name: &str,
+    security_level: SecurityLevel,
+    version_number: i32,
+) -> Option<String> {
+    let input = format!("{author_name}\n{impl_name}\n{security_level:?}\n{version_number}");
+    let digest = BoringSha256 {}.hash(input.as_bytes()).ok()?;
+    let digest = hex::encode(&digest[..6]);
+    Some(format!(
+        "keymint-{}-{}-{digest}",
+        security_level_slug(security_level),
+        version_number / 100
+    ))
+}
+
+fn security_level_instance(security_level: SecurityLevel) -> Option<&'static str> {
+    match security_level {
+        SecurityLevel::TRUSTED_ENVIRONMENT => Some("default"),
+        SecurityLevel::STRONGBOX => Some("strongbox"),
+        _ => None,
+    }
+}
+
+fn security_level_label(security_level: SecurityLevel) -> &'static str {
+    match security_level {
+        SecurityLevel::TRUSTED_ENVIRONMENT => "TEE",
+        SecurityLevel::STRONGBOX => "StrongBox",
+        SecurityLevel::SOFTWARE => "Software",
+        _ => "Unknown",
+    }
+}
+
+fn security_level_slug(security_level: SecurityLevel) -> &'static str {
+    match security_level {
+        SecurityLevel::TRUSTED_ENVIRONMENT => "tee",
+        SecurityLevel::STRONGBOX => "strongbox",
+        SecurityLevel::SOFTWARE => "software",
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn property_reader<'a>(
+        values: &'a HashMap<&'a str, &'a str>,
+    ) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| values.get(name).map(|value| value.to_string())
+    }
+
+    #[test]
+    fn property_profile_prefers_vendor_properties() {
+        let values = HashMap::from([
+            ("ro.product.manufacturer", "ProductCorp"),
+            ("ro.product.brand", "ProductBrand"),
+            ("ro.product.vendor.brand", "VendorCorp"),
+            ("ro.product.model", "ProductModel"),
+            ("ro.product.vendor.device", "VendorDevice"),
+        ]);
+
+        let profile = resolve_property_profile_with(
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4,
+            property_reader(&values),
+        )
+        .unwrap();
+
+        assert_eq!(profile.author_name, "VendorCorp");
+        assert_eq!(profile.impl_name, "VendorCorp VendorDevice TEE KeyMint");
+        assert_eq!(profile.version_number, KEYMINT_V4);
+    }
+
+    #[test]
+    fn property_profile_prefers_device_over_model_and_name() {
+        let values = HashMap::from([
+            ("ro.product.vendor.brand", "Pixel"),
+            ("ro.product.vendor.name", "pixel-9-pro"),
+            ("ro.product.vendor.model", "Pixel 9 Pro XL"),
+            ("ro.product.vendor.device", "akita"),
+        ]);
+
+        let profile = resolve_property_profile_with(
+            SecurityLevel::STRONGBOX,
+            KEYMINT_V4,
+            property_reader(&values),
+        )
+        .unwrap();
+
+        assert_eq!(profile.author_name, "Pixel");
+        assert_eq!(profile.impl_name, "Pixel akita StrongBox KeyMint");
+    }
+
+    #[test]
+    fn fallback_profile_preserves_legacy_strings() {
+        let tee = fallback_profile(SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4);
+        let strongbox = fallback_profile(SecurityLevel::STRONGBOX, KEYMINT_V4);
+
+        assert_eq!(tee.impl_name, "Android TEE KeyMint 4");
+        assert_eq!(tee.author_name, AOSP_AUTHOR_NAME);
+        assert_eq!(tee.unique_id, "android-TEE-keymint-4");
+        assert_eq!(strongbox.impl_name, "Android StrongBox KeyMint 4");
+        assert_eq!(strongbox.author_name, AOSP_AUTHOR_NAME);
+        assert_eq!(strongbox.unique_id, "android-StrongBox-keymint-4");
+    }
+
+    #[test]
+    fn pif_identity_builds_the_hardware_profile_per_security_level() {
+        let identity = crate::pif_spoof::PifIdentity {
+            brand: "google".to_string(),
+            device: "oriole".to_string(),
+            product: "oriole".to_string(),
+            manufacturer: "Google".to_string(),
+            model: "Pixel 6".to_string(),
+        };
+
+        let tee =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        assert_eq!(tee.author_name, "Google");
+        assert_eq!(tee.impl_name, "Google oriole TEE KeyMint");
+        assert_eq!(tee.version_number, KEYMINT_V4);
+
+        let strongbox =
+            profile_from_pif_identity(&identity, SecurityLevel::STRONGBOX, KEYMINT_V4).unwrap();
+        assert_eq!(strongbox.impl_name, "Google oriole StrongBox KeyMint");
+        assert_ne!(tee.unique_id, strongbox.unique_id);
+        assert!(tee.unique_id.len() <= 32 && tee.unique_id.is_ascii());
+    }
+
+    #[test]
+    fn pif_identity_profile_falls_back_through_device_model_brand() {
+        let mut identity = crate::pif_spoof::PifIdentity {
+            brand: "google".to_string(),
+            device: String::new(),
+            product: "oriole".to_string(),
+            manufacturer: "Google".to_string(),
+            model: "Pixel 6".to_string(),
+        };
+        let by_model =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        assert_eq!(by_model.impl_name, "Google Pixel 6 TEE KeyMint");
+
+        identity.model = String::new();
+        let by_brand =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        // "google" matches the author name case-insensitively, so it is not
+        // repeated inside the implementation name.
+        assert_eq!(by_brand.impl_name, "Google TEE KeyMint");
+
+        identity.brand = String::new();
+        let author_only =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        assert_eq!(author_only.impl_name, "Google TEE KeyMint");
+    }
+
+    #[test]
+    fn pif_identity_profile_rejects_an_empty_author() {
+        let identity = crate::pif_spoof::PifIdentity {
+            brand: "google".to_string(),
+            device: "oriole".to_string(),
+            product: "oriole".to_string(),
+            manufacturer: String::new(),
+            model: "Pixel 6".to_string(),
+        };
+        assert!(profile_from_pif_identity(
+            &identity,
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn unique_id_is_stable_ascii_bounded_and_security_level_specific() {
+        let values = HashMap::from([
+            ("ro.product.vendor.manufacturer", "Google"),
+            ("ro.product.vendor.model", "Pixel 9"),
+        ]);
+        let tee = resolve_property_profile_with(
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4,
+            property_reader(&values),
+        )
+        .unwrap();
+        let tee_again = resolve_property_profile_with(
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4,
+            property_reader(&values),
+        )
+        .unwrap();
+        let strongbox = resolve_property_profile_with(
+            SecurityLevel::STRONGBOX,
+            KEYMINT_V4,
+            property_reader(&values),
+        )
+        .unwrap();
+
+        assert_eq!(tee.unique_id, tee_again.unique_id);
+        assert_ne!(tee.unique_id, strongbox.unique_id);
+        assert!(tee.unique_id.len() <= 32);
+        assert!(strongbox.unique_id.len() <= 32);
+        assert!(tee.unique_id.is_ascii());
+        assert!(strongbox.unique_id.is_ascii());
+    }
+
+    #[test]
+    fn keymint_version_normalization_allows_known_versions_only() {
+        assert_eq!(normalize_keymint_version(1), Some(100));
+        assert_eq!(normalize_keymint_version(4), Some(400));
+        assert_eq!(normalize_keymint_version(100), Some(100));
+        assert_eq!(normalize_keymint_version(400), Some(400));
+        assert_eq!(normalize_keymint_version(999), None);
+    }
+
+    #[test]
+    fn android_major_version_uses_sdk_when_release_is_codename() {
+        let values = HashMap::from([
+            ("ro.build.version.release_or_codename", "Baklava"),
+            ("ro.build.version.sdk", "36"),
+        ]);
+
+        assert_eq!(
+            kmr_common::android_version::android_major_version_with(property_reader(&values)),
+            Some(16)
+        );
+    }
+
+    #[test]
+    fn system_hardware_info_keeps_canonical_version() {
+        let info = KeyMintHardwareInfo {
+            versionNumber: 999,
+            securityLevel: SecurityLevel::TRUSTED_ENVIRONMENT,
+            keyMintName: "VendorKeyMint".to_string(),
+            keyMintAuthorName: "Vendor".to_string(),
+            timestampTokenRequired: false,
+        };
+
+        let profile = profile_from_system_hardware_info(
+            &info,
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4,
+        )
+        .unwrap();
+
+        assert_eq!(profile.version_number, KEYMINT_V4);
+        assert_eq!(profile.impl_name, "VendorKeyMint");
+        assert_eq!(profile.author_name, "Vendor");
+    }
+
+    #[test]
+    fn system_hardware_info_rejects_empty_names_and_mismatched_security_level() {
+        let empty = KeyMintHardwareInfo {
+            versionNumber: 4,
+            securityLevel: SecurityLevel::TRUSTED_ENVIRONMENT,
+            keyMintName: " ".to_string(),
+            keyMintAuthorName: "Vendor".to_string(),
+            timestampTokenRequired: false,
+        };
+        assert!(profile_from_system_hardware_info(
+            &empty,
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4
+        )
+        .is_err());
+
+        let mismatched = KeyMintHardwareInfo {
+            keyMintName: "VendorKeyMint".to_string(),
+            keyMintAuthorName: "Vendor".to_string(),
+            securityLevel: SecurityLevel::STRONGBOX,
+            ..empty
+        };
+        assert!(profile_from_system_hardware_info(
+            &mismatched,
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn system_hardware_presence_only_checks_security_level() {
+        let info = KeyMintHardwareInfo {
+            versionNumber: 999,
+            securityLevel: SecurityLevel::STRONGBOX,
+            keyMintName: String::new(),
+            keyMintAuthorName: String::new(),
+            timestampTokenRequired: false,
+        };
+
+        assert!(ensure_system_hardware_security_level(&info, SecurityLevel::STRONGBOX).is_ok());
+        assert!(
+            profile_from_system_hardware_info(&info, SecurityLevel::STRONGBOX, KEYMINT_V4).is_err()
+        );
+    }
+}

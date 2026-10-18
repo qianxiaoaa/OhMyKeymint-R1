@@ -1,0 +1,269 @@
+name: Build OhMyKeymint
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches: [ "master" ]
+    paths-ignore:
+      - '**.md'
+      - '**.txt'
+      - '.github/**'
+      - '!.github/workflows/**'
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+jobs:
+  build-boringssl:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Clone BoringSSL
+      run: |
+        git clone https://boringssl.googlesource.com/boringssl
+
+    - name: Cache BoringSSL build
+      uses: actions/cache@v6
+      id: boringssl-cache
+      with:
+        path: boringssl/build
+        key: boringssl-${{ hashFiles('boringssl/.git/HEAD', 'boringssl/.git/refs/heads/main') }}
+
+    - name: Install Rust toolchain
+      if: steps.boringssl-cache.outputs.cache-hit != 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        target: aarch64-linux-android
+
+    - name: Install Android SDK
+      if: steps.boringssl-cache.outputs.cache-hit != 'true'
+      uses: android-actions/setup-android@v4
+    - name: Install Android NDK and bindgen
+      if: steps.boringssl-cache.outputs.cache-hit != 'true'
+      run: |
+        cargo install bindgen-cli
+        echo "y" | sdkmanager --install "ndk;29.0.14206865" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
+        echo "y" | sdkmanager --install "ndk-bundle" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
+        echo "y" | sdkmanager --install "cmake;4.1.2" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
+
+    - name: Install build dependencies
+      if: steps.boringssl-cache.outputs.cache-hit != 'true'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake ninja-build gcc-multilib
+
+    - name: Build BoringSSL
+      if: steps.boringssl-cache.outputs.cache-hit != 'true'
+      run: |
+        cd boringssl
+        export PATH="~/.cargo/bin:$PATH"
+        $ANDROID_SDK_ROOT/cmake/4.1.2/bin/cmake -GNinja -B build \
+          -DRUST_BINDINGS=aarch64-linux-android \
+          -DCMAKE_SYSROOT=$ANDROID_SDK_ROOT/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/sysroot/ \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_SDK_ROOT/ndk/29.0.14206865/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DANDROID_STL=c++_shared
+        ninja -j$(nproc) -C build
+    - name: Tar BoringSSL
+      run: |
+        tar czf boringssl.tar.gz boringssl/build boringssl/rust
+    
+    - name: Output BoringSSL
+      uses: actions/upload-artifact@v7
+      with:
+        name: boringssl.tar.gz
+        path: boringssl.tar.gz
+        retention-days: 3
+
+  setup-and-build:
+    runs-on: ubuntu-latest
+    needs:
+      - build-boringssl
+    permissions:
+      id-token: write
+      attestations: write
+    strategy:
+      matrix:
+        build-type: [debug, release]
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v7
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        version: 10.15.1
+        run_install: false
+
+    - name: Install Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: pnpm
+        cache-dependency-path: webui/pnpm-lock.yaml
+
+    - name: Build WebUI
+      run: |
+        pnpm --dir webui install --frozen-lockfile
+        pnpm --dir webui build
+
+    - name: Verify committed WebUI build
+      run: |
+        webroot_status="$(git status --porcelain=v1 --untracked-files=all -- template/webroot)"
+        if ! git diff --exit-code -- template/webroot || [ -n "$webroot_status" ]; then
+          git status --short --untracked-files=all -- template/webroot
+          git diff -- template/webroot
+          echo "template/webroot does not match the reproducible WebUI build" >&2
+          exit 1
+        fi
+
+    - name: Install Rust toolchain
+      uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        toolchain: nightly
+        target: aarch64-linux-android
+
+    - name: Cache Cargo registry and build artifacts
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Install Android SDK
+      uses: android-actions/setup-android@v4
+    - name: Install Android NDK
+      run: |
+        echo "y" | sdkmanager --install "ndk;29.0.14206865" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
+    - name: Install protoc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
+    - name: Download BoringSSL
+      uses: actions/download-artifact@v8
+      with:
+        name: boringssl.tar.gz
+        path: .
+
+    - name: Configure Cargo for Android target
+      run: |
+        tar xf boringssl.tar.gz
+        python scripts/setup_cargo_config.py \
+          --force \
+          --ndk-root "$ANDROID_SDK_ROOT/ndk/29.0.14206865" \
+          --host-tag linux-x86_64
+        cat >> .cargo/config.toml <<EOF
+
+        [patch.crates-io]
+        bssl-sys = { path = "$GITHUB_WORKSPACE/boringssl/rust/bssl-sys" }
+        EOF
+
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install toml
+
+    - name: Build OhMyKeymint
+      id: prepareArtifact
+      env:
+        BORINGSSL_BUILD_DIR: ${{ github.workspace }}/boringssl/build
+      run: |
+        unset RUSTFLAGS
+        python build.py --${{ matrix.build-type }}
+        name=`ls target/OhMyKeymint-* | awk -F '(/|.zip)' '{print $2}'` && echo "releaseName=$name" >> $GITHUB_OUTPUT
+        unzip target/OhMyKeymint-*.zip -d module-${{ matrix.build-type }}
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v7
+      id: upload
+      with:
+        name: ${{ steps.prepareArtifact.outputs.releaseName }}
+        path: "./module-${{ matrix.build-type }}/*"
+        retention-days: 90
+
+    - name: Stage the release package
+      if: ${{ startsWith(github.ref, 'refs/tags/v') && matrix.build-type == 'release' }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-zip
+        path: target/OhMyKeymint-*.zip
+        retention-days: 90
+
+    - name: Attest release build provenance
+      if: ${{ startsWith(github.ref, 'refs/tags/') && matrix.build-type == 'release' }}
+      uses: actions/attest-build-provenance@v4
+      with:
+        subject-name: ${{ steps.prepareArtifact.outputs.releaseName }}
+        subject-digest: sha256:${{ steps.upload.outputs.artifact-digest }}
+
+  publish-release:
+    # A tag push is the release trigger. The package is published with secrets.PAT because a
+    # release created through the default workflow token is attributed to github-actions[bot],
+    # and this fork must carry its author's name on every artifact.
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    needs: setup-and-build
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.PAT }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Require the author token
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::secrets.PAT is not set; refusing to publish the release as a bot."
+            exit 1
+          fi
+
+      - name: Download release package
+        uses: actions/download-artifact@v8
+        with:
+          name: release-zip
+          path: release-zip
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+
+          zip_path="$(find release-zip -maxdepth 1 -name 'OhMyKeymint-R1-*-release.zip' -print -quit)"
+          if [ -z "$zip_path" ]; then
+            echo "::error::No arm64 release package was produced by the build job."
+            exit 1
+          fi
+
+          # OhMyKeymint-R1-1.3.6-100-d6f65a3-release.zip -> OhMyKeymint-R1-1.3.6-100-d6f65a3
+          release_name="$(basename "$zip_path" .zip)"
+          release_name="${release_name%-release}"
+
+          notes="$(git tag -l --format='%(contents)' "$TAG")"
+          if [ -z "$notes" ]; then
+            notes="$(git log -1 --pretty=%s "$TAG")"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$release_name" --notes "$notes"
+            gh release upload "$TAG" "$zip_path" --clobber
+          else
+            gh release create "$TAG" "$zip_path" --title "$release_name" --notes "$notes"
+          fi
+
+          gh release view "$TAG" --json tagName,name,assets --jq '{tag: .tagName, name: .name, assets: [.assets[].name]}'

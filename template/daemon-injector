@@ -1,0 +1,161 @@
+#!/system/bin/sh
+
+MODDIR=${0%/*}
+STATE_DIR=/data/adb/omk
+PAYLOAD_STATE_FILE=$STATE_DIR/injector.payload
+RESTART_FILE=$STATE_DIR/restart.injector
+PEER_RESTART_FILE=$STATE_DIR/restart.keymint
+RESTART_ALL_FILE=$STATE_DIR/restart.all
+
+find_module_injector() {
+  if [ -f "$STATE_DIR/inject" ]; then
+    echo "$STATE_DIR/inject"
+    return 0
+  fi
+  if [ -f "$MODDIR/inject" ]; then
+    echo "$MODDIR/inject"
+    return 0
+  fi
+  if [ -f "$MODDIR/libs/arm64-v8a/inject" ]; then
+    echo "$MODDIR/libs/arm64-v8a/inject"
+    return 0
+  fi
+  if [ -f "$MODDIR/libs/x86_64/inject" ]; then
+    echo "$MODDIR/libs/x86_64/inject"
+    return 0
+  fi
+  return 1
+}
+
+prepare_injector() {
+  TARGET_INJECTOR=$(find_module_injector)
+  if [ -z "$TARGET_INJECTOR" ]; then
+    echo "[injector-daemon] injector binary not found"
+    return 1
+  fi
+
+  chmod 0755 "$TARGET_INJECTOR" 2>/dev/null || true
+  chcon u:object_r:system_file:s0 "$TARGET_INJECTOR" 2>/dev/null || true
+  if [ ! -x "$TARGET_INJECTOR" ]; then
+    echo "[injector-daemon] injector binary missing or not executable: $TARGET_INJECTOR"
+    return 1
+  fi
+  return 0
+}
+
+expand_shared_restart() {
+  if [ -f "$RESTART_ALL_FILE" ]; then
+    : > "$RESTART_FILE"
+    : > "$PEER_RESTART_FILE"
+    rm -f "$RESTART_ALL_FILE"
+  fi
+}
+
+consume_restart_request() {
+  expand_shared_restart
+
+  if [ -f "$RESTART_FILE" ]; then
+    rm -f "$RESTART_FILE"
+    return 0
+  fi
+
+  return 1
+}
+
+get_keystore_pid() {
+  pidof keystore2 2>/dev/null | awk '{print $1}'
+}
+
+is_injected() {
+  pid=$1
+  maps=/proc/$pid/maps
+  [ -r "$maps" ] || return 1
+
+  if [ -r "$PAYLOAD_STATE_FILE" ]; then
+    if toybox awk -v want_pid="$pid" '
+      FNR == NR {
+        if ($1 == want_pid && $2 != "") {
+          ident = $2
+        }
+        next
+      }
+      ident != "" && index($0, ident) {
+        found = 1
+        exit
+      }
+      END {
+        exit found ? 0 : 1
+      }
+    ' "$PAYLOAD_STATE_FILE" "$maps" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+
+  grep -F "$TARGET_INJECTOR" "$maps" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+restart_keystore() {
+  pid=$1
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    echo "[injector-daemon] restart requested; stopping keystore2 pid=$pid"
+    kill -TERM "$pid" 2>/dev/null
+    sleep 2
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null
+    fi
+  fi
+}
+
+mkdir -p "$STATE_DIR"
+pending_restart=0
+last_attempt_pid=
+last_attempt_at=0
+retry_cooldown=15
+
+while true; do
+  if ! prepare_injector; then
+    sleep 5
+    continue
+  fi
+
+  if consume_restart_request; then
+    pending_restart=1
+    restart_keystore "$(get_keystore_pid)"
+    if ! prepare_injector; then
+      sleep 5
+      continue
+    fi
+  fi
+
+  pid=$(get_keystore_pid)
+  if [ -z "$pid" ]; then
+    last_attempt_pid=
+    sleep 2
+    continue
+  fi
+
+  if is_injected "$pid"; then
+    pending_restart=0
+    last_attempt_pid=
+    sleep 5
+    continue
+  fi
+
+  if [ "$last_attempt_pid" = "$pid" ] && [ "$pending_restart" -eq 0 ]; then
+    now=$(date +%s 2>/dev/null)
+    if [ -n "$now" ] && [ "$now" -lt $((last_attempt_at + retry_cooldown)) ]; then
+      sleep 5
+      continue
+    fi
+  fi
+
+  echo "[injector-daemon] injecting into keystore2 pid=$pid via $TARGET_INJECTOR"
+  "$TARGET_INJECTOR"
+  rc=$?
+  last_attempt_pid=$pid
+  last_attempt_at=$(date +%s 2>/dev/null)
+  pending_restart=0
+  echo "[injector-daemon] injector exited with code $rc"
+  sleep 3
+done

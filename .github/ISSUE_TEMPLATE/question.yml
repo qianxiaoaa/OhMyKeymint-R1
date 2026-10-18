@@ -1,0 +1,44 @@
+name: Question
+description: Ask a usage question not answered by the FAQ or existing issues
+title: "[Question] "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the [FAQ](https://github.com/qwq233/OhMyKeymint/blob/master/docs/FAQ.md) and [README](https://github.com/qwq233/OhMyKeymint/blob/master/README.md), then search existing issues.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I kept the required `[Question]` prefix and added a specific title after it.
+          required: true
+        - label: The FAQ, README, and existing issues do not answer this question.
+          required: true
+        - label: This is not a reproducible bug or a feature request.
+          required: true
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: State exactly what you need to know.
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal and background
+      description: Explain the intended result and what you have already read or tried.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Relevant environment and configuration
+      description: If relevant, provide the OMK build, Android version, package, and a redacted configuration excerpt.

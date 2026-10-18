@@ -1,0 +1,8 @@
+Qualcomm Soter software TA and Binder service
+
+Source: Andrea-lyz/ommega, soter-ta and soterta-svc components
+License: GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later)
+
+This component is distributed as part of OhMyKeymint under the terms of the
+AGPL-3.0-or-later. See the repository LICENSE.md for the complete license
+text.

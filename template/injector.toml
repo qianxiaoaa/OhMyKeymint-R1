@@ -1,0 +1,41 @@
+# With `[filter].enabled = true`, caller UID and resolved packages select OMK.
+# Targets: package (all users), package@user_id, or uid:full_android_uid.
+# Matching one shared-UID package selects the entire UID.
+# Filter deny settings still apply to every package resolved for the UID.
+
+version = 1
+
+
+scoop = [
+  io.github.vvb2060.keyattestation
+  com.google.android.gsf
+  com.google.android.gms
+  com.android.vending
+  com.eltavine.duckdetector
+]
+
+[main]
+enabled = true
+log_level = "debug"
+# Optional delay before challenged OMK generation, 0..250 ms; 0 disables it.
+attestation_generation_delay_ms = 0
+# Optional delay before two-way OMK createOperation calls, 0..250 ms; 0 disables it.
+operation_start_delay_ms = 0
+
+[filter]
+enabled = true
+deny_packages = []
+block_android_package = true
+allow_unknown_package = false
+
+[intercept]
+get_security_level = true
+get_key_entry = true
+update_subcomponent = true
+list_entries = true
+delete_key = true
+grant = true
+ungrant = true
+get_number_of_entries = true
+list_entries_batched = true
+get_supplementary_attestation_info = true

@@ -1,0 +1,62 @@
+name: Feature request
+description: Propose behavior within the project's supported scope
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the [FAQ](https://github.com/qwq233/OhMyKeymint/blob/master/docs/FAQ.md), search existing issues, and describe the real problem rather than only an implementation idea.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I kept the required `[Feature]` prefix and added a specific title after it.
+          required: true
+        - label: I found no issue requesting the same behavior.
+          required: true
+        - label: This is not a bug report or a general usage question.
+          required: true
+        - label: The request keeps Android as the production target and considers Android 12-17 compatibility.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current problem or limitation
+      description: Explain why current behavior does not satisfy a real use case.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Use case
+      description: Identify the caller, method, Android version, and expected outcome where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Desired behavior
+      description: Describe a verifiable result. Implementation details are optional.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain why existing configuration, APIs, or a smaller change are insufficient.
+
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and risk
+      description: Identify possible effects on Android versions, kernels, routing, storage, attestation, or authentication.
+    validations:
+      required: true

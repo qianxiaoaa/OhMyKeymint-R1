@@ -1,0 +1,795 @@
+// Component anatomy, typography, interaction and motion come from miuix-vue.
+// These overrides connect the existing appearance preferences and page layout.
+:root {
+  --m-text-main-size: 17px;
+  --m-text-body1-size: 16px;
+  --m-text-body2-size: 14px;
+  --m-text-button-size: 17px;
+  --m-text-subtitle-size: 14px;
+  --m-text-title4-size: 18px;
+  --omk-top-inset: var(--window-inset-top, env(safe-area-inset-top, 0px));
+  --omk-bottom-inset: var(--window-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --m-snackbar-inset-bottom: var(--omk-bottom-inset);
+  --omk-left-inset: var(--window-inset-left, env(safe-area-inset-left, 0px));
+  --omk-right-inset: var(--window-inset-right, env(safe-area-inset-right, 0px));
+  --omk-nav-height: 64px;
+  --omk-nav-bottom: var(--omk-bottom-inset);
+  --omk-nav-clearance: calc(var(--omk-nav-height) + (var(--omk-nav-bottom) + 12px) / var(--omk-ui-scale));
+  --omk-bar-background: rgb(247 247 247 / 87%);
+  --omk-top-bar-fill: var(--m-color-surface);
+  --omk-system-bar-background: var(--m-color-surface);
+  --omk-host-bar-background: #f7f7f7;
+  --omk-glass-background: rgb(255 255 255 / 40%);
+  --omk-identity-mix: 42%;
+  --omk-preference-mix: 24%;
+  --omk-ui-scale: 1;
+}
+
+// Extend the page's surface to the screen edges. Native bar icons belong to
+// the host, so use its surface only when its light/dark mode differs from ours.
+:root[data-host-theme='light'][data-theme-resolved='dark'],
+:root[data-host-theme='dark'][data-theme-resolved='light'] {
+  --omk-system-bar-background: var(--omk-host-bar-background);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-host-theme])[data-theme-resolved='dark'] {
+    --omk-system-bar-background: var(--omk-host-bar-background);
+  }
+}
+@media (prefers-color-scheme: dark) {
+  :root { --omk-host-bar-background: #000; }
+  :root:not([data-host-theme])[data-theme-resolved='light'] {
+    --omk-system-bar-background: var(--omk-host-bar-background);
+  }
+}
+
+:root.m-theme-dark {
+  --omk-bar-background: rgb(0 0 0 / 78%);
+  --omk-glass-background: rgb(36 36 36 / 40%);
+}
+
+/* app.scss is injected after miuix-vue's stylesheet.  Keep the surface
+ * tokens in sync with the library's light/dark class; otherwise a fallback
+ * declared on :root can win the cascade and leave cards/popups white while
+ * the rest of the page is dark. */
+:root.m-theme-light {
+  --m-color-background: #fff;
+  --m-color-on-background: #000;
+  --m-color-surface: #f7f7f7;
+  --m-color-on-surface: #000;
+  --m-color-surface-variant: #fff;
+  --m-color-surface-container: #fff;
+  --m-color-on-surface-container: #000;
+  --m-color-surface-container-high: #e8e8e8;
+  --m-color-surface-container-highest: #e8e8e8;
+  --m-color-on-surface-variant-summary: rgb(0 0 0 / 60%);
+  --m-color-on-surface-variant-actions: rgb(0 0 0 / 40%);
+  --m-color-divider-line: #e0e0e0;
+  --m-color-window-dimming: rgb(0 0 0 / 30%);
+}
+
+:root.m-theme-dark {
+  --m-color-background: #242424;
+  --m-color-on-background: rgb(255 255 255 / 90%);
+  --m-color-surface: #000;
+  --m-color-on-surface: #f2f2f2;
+  --m-color-surface-variant: #242424;
+  --m-color-surface-container: #242424;
+  --m-color-on-surface-container: rgb(255 255 255 / 90%);
+  --m-color-surface-container-high: #242424;
+  --m-color-surface-container-highest: #2d2d2d;
+  --m-color-on-surface-variant-summary: rgb(255 255 255 / 50%);
+  --m-color-on-surface-variant-actions: rgb(255 255 255 / 40%);
+  --m-color-divider-line: #393939;
+  --m-color-window-dimming: rgb(0 0 0 / 60%);
+}
+
+:root[data-theme-mode='amoled'] {
+  --m-color-background: #000;
+  --m-color-on-background: rgb(255 255 255 / 90%);
+  --m-color-surface: #000;
+  --m-color-surface-variant: #101010;
+  --m-color-surface-container: #101010;
+  --m-color-surface-container-high: #171717;
+  --m-color-surface-container-highest: #202020;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; min-height: 100%; margin: 0; }
+html { scrollbar-width: none; }
+html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; }
+// Miuix sheets/dialogs own their scrolling containers. Keep the content
+// scrollable for small screens while matching the edge-to-edge mobile UI
+// (without exposing a browser scrollbar gutter).
+.m-bottom-sheet__content,
+.m-dialog__content {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.m-bottom-sheet__inner { padding-bottom: var(--omk-bottom-inset); }
+.m-bottom-sheet__content::-webkit-scrollbar,
+.m-dialog__content::-webkit-scrollbar {
+  display: none;
+}
+.m-dropdown-preference__popup {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  /* Keep the popup touch-scrollable while suppressing the native WebView
+   * scrollbar.  Android WebView may ignore `scrollbar-width` and expose a
+   * transient track unless both the track and thumb are explicitly hidden. */
+  scrollbar-color: transparent transparent;
+}
+.m-dropdown-preference__popup::-webkit-scrollbar,
+.m-dropdown-preference__popup::-webkit-scrollbar-track,
+.m-dropdown-preference__popup::-webkit-scrollbar-thumb {
+  width: 0;
+  height: 0;
+  display: none;
+  background: transparent;
+}
+
+/* The dropdown layer is teleported directly under <body>.  Some WebView
+ * versions attach the scrollbar to the layer rather than the popup node. */
+.m-dropdown-preference__layer,
+.m-dropdown-preference__layer * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.m-dropdown-preference__layer::-webkit-scrollbar,
+.m-dropdown-preference__layer *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* Explicitly bind card/surface backgrounds to the active MIUIX token.  This
+ * prevents browser-default white blocks when a component receives an inline
+ * color prop or renders in a teleported layer. */
+.m-card,
+.m-surface,
+.m-navigation-bar,
+.m-dropdown-preference__popup,
+.m-dropdown-preference__item {
+  background-color: var(--m-color-surface-container);
+}
+
+/* Miuix dropdowns are teleported to <body>; keep this fallback broad enough
+ * for older WebViews that paint a scrollbar on an internal scrolling wrapper
+ * instead of the popup host itself. */
+.m-dropdown-preference__popup * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.m-dropdown-preference__popup *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+  background: transparent;
+}
+body {
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  color: var(--m-color-on-surface);
+  background: var(--m-color-surface);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  z-index: 1300;
+  left: 0;
+  right: 0;
+  background: var(--omk-system-bar-background);
+  pointer-events: none;
+}
+body::before { top: 0; height: var(--omk-top-inset); }
+body::after { bottom: 0; height: var(--omk-bottom-inset); }
+:root[data-bar-blur='true'] body::before,
+:root[data-bar-blur='true'] body::after,
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true'] body::after,
+:root[data-bar-blur='true'] .m-top-app-bar::before {
+  background: transparent;
+}
+button, input, textarea { font: inherit; }
+button { touch-action: manipulation; }
+.omk-app {
+  min-height: calc(100vh / var(--omk-ui-scale));
+  min-height: calc(100dvh / var(--omk-ui-scale));
+  zoom: var(--omk-ui-scale, 1);
+  padding: 0 calc(var(--omk-right-inset) / var(--omk-ui-scale))
+    var(--omk-nav-clearance) calc(var(--omk-left-inset) / var(--omk-ui-scale));
+}
+.page-host {
+  position: relative;
+  /* Clip entering pages without creating a nested scroll container. Android
+   * WebView otherwise includes the translated edge in its viewport sizing. */
+  overflow-x: clip;
+  min-height: calc(100vh / var(--omk-ui-scale) - var(--omk-nav-clearance));
+  min-height: calc(100dvh / var(--omk-ui-scale) - var(--omk-nav-clearance));
+  /* Per-page scroll restoration must not be shifted again when a leaving
+   * panel is removed from layout at the end of its transition. */
+  overflow-anchor: none;
+}
+.app-page, .settings-view { width: min(100%, 720px); margin: 0 auto; }
+.app-page { --omk-page-side: 12px; padding: 0 var(--omk-page-side) 16px; }
+.m-top-app-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  padding-top: calc(var(--omk-top-inset) / var(--omk-ui-scale));
+  /* MIUIX supplies an inline solid background; all bars share this surface. */
+  background: var(--omk-top-bar-fill) !important;
+}
+.app-page > .m-top-app-bar {
+  width: calc(100% + var(--omk-page-side) * 2);
+  margin-inline: calc(-1 * var(--omk-page-side));
+}
+.m-top-app-bar::before,
+.targets-top-bar::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: calc(var(--omk-top-inset) / var(--omk-ui-scale));
+  background: var(--omk-system-bar-background);
+  pointer-events: none;
+}
+.targets-top-bar .m-top-app-bar {
+  position: static;
+  padding-top: 0;
+  background: transparent !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.targets-top-bar .m-top-app-bar::before { content: none; }
+.page-switch-enter-active { transition: opacity 180ms ease-out, transform 220ms cubic-bezier(.2, .8, .2, 1); }
+.page-switch-leave-active { display: none !important; }
+.page-switch-enter-from { opacity: 0; transform: translate3d(calc(var(--omk-page-direction) * 12px), 0, 0); }
+.targets-page-enter-active { transition: opacity 160ms ease-out, transform 220ms cubic-bezier(.2, .8, .2, 1); }
+.targets-page-enter-from { opacity: 0; transform: translate3d(0, 8px, 0); }
+.m-basic-component__title { font-size: 16px; line-height: 1.3; }
+.m-basic-component__summary { font-size: 14px; line-height: 1.35; }
+.m-arrow-preference__title, .m-checkbox-preference__title, .m-switch-preference__title { font-size: 16px; line-height: 1.3; }
+.m-arrow-preference__summary, .m-checkbox-preference__summary, .m-switch-preference__summary { font-size: 14px; line-height: 1.35; }
+.m-basic-component__end { margin-left: 0; margin-inline-start: auto; }
+.m-top-app-bar__nav { left: auto; inset-inline-start: 0; padding-left: 0; padding-inline-start: 16px; }
+.m-top-app-bar__actions { right: auto; inset-inline-end: 0; padding-right: 0; padding-inline-end: 16px; }
+.identity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.identity-card { min-width: 0; }
+.identity-card > .m-card { height: 100%; min-height: 182px; padding: 16px; }
+.identity-card > .m-card {
+  /* KernelSU-style tonal surfaces: the active accent is visible as a
+   * soft fill instead of leaving every raised card pure white. */
+  background: var(--m-color-surface-container);
+}
+.identity-card > .m-card {
+  background: var(--m-color-primary-container);
+  background: color-mix(
+    in srgb,
+    var(--m-color-primary-container) var(--omk-identity-mix),
+    var(--m-color-surface-container)
+  );
+}
+.identity-field { display: grid; gap: 4px; min-width: 0; padding-top: 14px; }
+.identity-field:first-child { padding-top: 0; }
+.identity-field > span { color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.35; }
+.identity-field strong { overflow-wrap: anywhere; font-size: 15px; line-height: 1.35; font-weight: 600; }
+.identity-field--primary { min-height: 42px; }
+.identity-field--primary strong { font-size: clamp(13px, 3.2vw, 15px); }
+[data-tone='error'] { color: var(--m-color-error); }
+[data-tone='muted'] {
+  color: var(--m-color-on-surface);
+  font-size: inherit;
+  font-weight: inherit;
+}
+[data-tone='loading'] { opacity: .7; }
+.home-page .m-top-app-bar__title { align-items: flex-start; width: 100%; padding-inline: var(--omk-page-side); text-align: start; }
+/* The ~30-character release name is about 16em wide, so it shrinks before it would wrap. */
+.home-page .m-top-app-bar__title .m-text {
+  font-size: min(clamp(20px, 5.3vw, 24px), max(16px, (100vw / var(--omk-ui-scale) - 2 * var(--omk-page-side)) / 17));
+  line-height: 1.2;
+}
+.diagnostics-card { margin-top: 12px; }
+.diagnostics-card > .m-card { padding: 14px 12px; background: var(--m-color-surface-container); }
+.diagnostics-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 10px; }
+.diagnostics-heading h2 { margin: 0; font-size: 17px; line-height: 1.3; }
+.diagnostics-heading span { color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.4; }
+.diagnostics-refresh { min-height: 34px; padding: 6px 12px; font-size: 14px; flex-shrink: 0; margin-left: 10px; }
+.diagnostics-empty { min-height: 56px; display: flex; align-items: center; justify-content: center; gap: 8px; color: var(--m-color-on-surface-variant-summary); }
+.diagnostics-services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; }
+.diagnostics-service { min-width: 0; padding: 9px 10px; }
+.diagnostics-service dt { color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.4; }
+.diagnostics-service dd { margin: 3px 0 0; color: var(--m-color-on-surface); font-size: 14px; font-weight: 600; line-height: 1.3; }
+.diagnostics-service dd[data-tone='ok'] { color: var(--m-color-primary); }
+.diagnostics-service dd[data-tone='error'] { color: var(--m-color-error); }
+.diagnostics-service dd small { display: block; margin-top: 2px; color: var(--m-color-on-surface-variant-summary); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.diagnostics-note { padding: 12px 2px 0; line-height: 1.5; }
+.keybox-inspector { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--m-color-outline-variant); }
+.keybox-inspector h3 { margin: 0 0 8px; color: var(--m-color-on-surface); font-size: 14px; line-height: 1.35; }
+.diagnostics-muted { margin: 0; color: var(--m-color-on-surface-variant-summary); font-size: 13px; }
+.keybox-chains { display: grid; gap: 7px; }
+.keybox-chain { min-width: 0; overflow: hidden; border-radius: 12px; background: transparent; }
+.keybox-chain .m-basic-component { min-height: 58px; padding: 10px 12px; }
+.keybox-chain .m-basic-component--clickable::after { content: none; }
+.keybox-chain .m-basic-component--clickable:focus-visible .keybox-chain__expand { box-shadow: 0 0 0 2px var(--m-color-primary); border-radius: 4px; }
+.keybox-chain .m-basic-component__center { min-width: 0; }
+.keybox-chain .m-basic-component__center .m-text:first-child { font-size: 15px; line-height: 1.4; }
+.keybox-chain .m-basic-component__center .m-text:last-child { font-size: 13px; line-height: 1.4; }
+.keybox-chain__expand { color: var(--m-color-on-surface-variant-summary); transition: transform 180ms ease; }
+.keybox-chain__expand.is-expanded { transform: rotate(180deg); }
+.keybox-chain__collapse { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 200ms ease, opacity 160ms ease; }
+.keybox-chain__collapse.is-expanded { grid-template-rows: 1fr; opacity: 1; }
+.keybox-certificates { min-width: 0; min-height: 0; overflow: hidden; padding: 0 12px 12px; }
+.keybox-certificate { min-width: 0; padding: 10px 0; border-top: 1px solid var(--m-color-outline-variant); }
+.keybox-certificate:first-child { padding-top: 2px; border-top: 0; }
+.keybox-certificate h4 { margin: 0 0 8px; color: var(--m-color-on-surface); font-size: 14px; line-height: 1.4; }
+.keybox-certificate__details { min-width: 0; margin: 0; }
+.keybox-certificate__details > div { display: grid; grid-template-columns: minmax(54px, auto) minmax(0, 1fr); gap: 4px 8px; min-width: 0; padding: 0 0 6px; }
+.keybox-certificate__details > div:last-child { padding-bottom: 0; }
+.keybox-certificate__details dt { color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.5; }
+.keybox-certificate__details dd { margin: 0; overflow-wrap: anywhere; color: var(--m-color-on-surface); font-size: 14px; line-height: 1.5; }
+@media (prefers-reduced-motion: reduce) {
+  .keybox-chain__expand, .keybox-chain__collapse { transition: none; }
+}
+.preference-section { margin-top: 4px; }
+.preference-section > .m-small-title,
+.settings-section > .m-small-title { padding: 10px 19px 8px; }
+.preference-card .m-basic-component { min-height: 70px; }
+.preference-card .m-basic-component__center > .m-text--headline1 { font-size: 16px; line-height: 1.3; }
+.preference-card > .m-card {
+  background: var(--m-color-primary-container);
+  background: color-mix(
+    in srgb,
+    var(--m-color-primary-container) var(--omk-preference-mix),
+    var(--m-color-surface-container)
+  );
+}
+
+/* KernelSU falls back to its neutral light/dark surfaces when Monet is
+ * disabled.  Keep a previously selected custom seed from tinting every card
+ * after the user turns the dynamic palette off. */
+:root[data-monet='false'] .identity-card > .m-card,
+:root[data-monet='false'] .preference-card > .m-card,
+:root[data-monet='false'] .settings-card .m-card {
+  background: var(--m-color-surface-container) !important;
+}
+
+:root[data-monet='false'] .settings-card .m-card {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-monet='false'][data-floating-bottom-bar='true']
+  .main-navigation .m-navigation-bar__item--selected {
+  color: var(--m-color-on-surface);
+}
+:root[data-monet='false'][data-floating-bottom-bar='true'] .main-navigation {
+  --omk-nav-indicator-fill: var(--m-color-surface-container-high);
+}
+.preference-icon { display: inline-flex; width: 28px; align-items: center; justify-content: center; color: var(--m-color-primary); }
+.navigation-dock {
+  /* Keep the viewport anchor outside the zoomed page and its compositing
+   * layers. Only the inner MIUIX bar participates in scaling/glass motion. */
+  position: fixed;
+  z-index: 80;
+  right: var(--omk-right-inset);
+  bottom: 0;
+  left: var(--omk-left-inset);
+  display: flex;
+  justify-content: center;
+  overflow-x: clip;
+  padding-bottom: var(--omk-bottom-inset);
+  pointer-events: none;
+}
+.main-navigation {
+  --omk-nav-indicator-fill: var(--m-color-primary-container);
+  position: relative;
+  flex: none;
+  width: calc(100% / var(--omk-ui-scale));
+  transform: scale(var(--omk-ui-scale));
+  transform-origin: center bottom;
+  pointer-events: auto;
+  background: var(--m-color-surface);
+}
+.main-navigation .m-navigation-bar__row { position: relative; max-width: 720px; margin-inline: auto; }
+.main-navigation .m-navigation-bar__item { position: relative; min-width: 0; transition: color 180ms ease, opacity 180ms ease, transform 180ms cubic-bezier(.2, .8, .2, 1); }
+.main-navigation .m-navigation-bar__item:active { transform: scale(.94); }
+.main-navigation .m-navigation-bar__icon { transition: transform 220ms cubic-bezier(.2, .8, .2, 1); }
+.main-navigation .m-navigation-bar__item--selected .m-navigation-bar__icon { transform: translateY(-1px); }
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__row::before {
+  content: '';
+  position: absolute;
+  top: 7px;
+  left: 0;
+  width: calc(100% / 3);
+  height: 30px;
+  background: radial-gradient(ellipse 26px 15px at center, var(--m-color-tertiary-container) 96%, transparent 100%);
+  transform: translate3d(calc(var(--omk-liquid-nav-index, 0) * 100%), 0, 0);
+  transition: transform 240ms cubic-bezier(.2, .8, .2, 1);
+  pointer-events: none;
+}
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__item--selected {
+  color: var(--m-color-primary);
+}
+.main-navigation .m-navigation-bar__label { max-width: 100%; padding-inline: 4px; line-height: 1.25; }
+:root[data-bar-blur='true'] {
+  --omk-top-bar-fill: var(--omk-bar-background);
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-bar-blur='true'] { --omk-top-bar-fill: color-mix(in srgb, var(--m-color-surface) 87%, transparent); }
+}
+:root[data-bar-blur='true'] .m-top-app-bar,
+:root[data-bar-blur='true'][data-floating-bottom-bar='false'] .main-navigation {
+  /* A translucent layer is required for backdrop-filter to reveal the page
+   * beneath it.  Keep an rgba fallback for older Android WebViews, then use
+   * the active MIUIX surface token so dark/AMOLED themes never turn white. */
+  background: var(--omk-bar-background);
+  background: color-mix(in srgb, var(--m-color-surface) 87%, transparent);
+  -webkit-backdrop-filter: blur(25px) saturate(1.2);
+  backdrop-filter: blur(25px) saturate(1.2);
+}
+:root[data-floating-bottom-bar='true'] {
+  --omk-nav-bottom: max(28px, calc(var(--omk-bottom-inset) + 8px));
+}
+:root[data-floating-bottom-bar='true'] .navigation-dock {
+  bottom: var(--omk-nav-bottom);
+  padding-bottom: 0;
+}
+:root[data-floating-bottom-bar='true'] .main-navigation {
+  flex: none;
+  width: 236px;
+  height: 64px;
+  padding: 4px;
+  border-radius: 32px;
+  background: var(--m-color-surface-container);
+  box-shadow: 0 0 10px rgb(0 0 0 / 10%);
+  touch-action: none;
+  transform: translate3d(var(--omk-liquid-nav-panel-offset, 0px), 0, 0)
+    scale(var(--omk-ui-scale));
+  transition: transform 380ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+:root[data-floating-bottom-bar='true'] .main-navigation .m-divider { display: none; }
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__row::before {
+  top: 0;
+  height: 56px;
+  border-radius: 28px;
+  background: var(--omk-nav-indicator-fill);
+  background: color-mix(in srgb, var(--m-color-primary) 15%, transparent);
+  transition: transform 380ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__item { height: 56px; border-radius: 28px; opacity: 1; }
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__item--selected { background: transparent; color: var(--m-color-primary); }
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__icon { margin-top: 4px; }
+:root[data-floating-bottom-bar='true'] .main-navigation .m-navigation-bar__label { font-size: 11px; margin-bottom: 4px; }
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true'] .main-navigation {
+  overflow: hidden;
+  background: var(--omk-glass-background);
+  background: color-mix(in srgb, var(--m-color-surface-container) 40%, transparent);
+  -webkit-backdrop-filter: blur(25px) saturate(1.35);
+  backdrop-filter: blur(25px) saturate(1.35);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%), 0 3px 16px rgb(0 0 0 / 16%);
+}
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true'] .main-navigation .m-navigation-bar__item--selected {
+  /* The moving pseudo-element is the selected surface; the item remains
+   * transparent so the lens can slide continuously between tabs. */
+  background: transparent;
+  color: var(--m-color-primary);
+}
+
+/* LiquidBottomTabs-inspired sliding lens for the Vue MIUIX navigation bar.
+ * The indicator follows pointer drags through --omk-liquid-nav-index and
+ * settles with a spring-like easing when a tab is released. */
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true'] .main-navigation {
+  --omk-liquid-nav-index: 0;
+  --omk-liquid-nav-scale: 1;
+  --omk-liquid-nav-highlight-x: 50%;
+  --omk-liquid-nav-panel-offset: 0px;
+  isolation: isolate;
+  overflow: hidden;
+  touch-action: none;
+  /* Keep a translucent host surface beneath the moving lens.  Without this
+   * layer backdrop-filter has no backdrop to sample and older WebViews paint
+   * the bar as a fully transparent strip. */
+  background: var(--omk-glass-background);
+  background: color-mix(in srgb, var(--m-color-surface-container) 40%, transparent);
+  -webkit-backdrop-filter: blur(25px) saturate(1.35);
+  backdrop-filter: blur(25px) saturate(1.35);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%), 0 3px 16px rgb(0 0 0 / 16%);
+  transform: translate3d(var(--omk-liquid-nav-panel-offset), 0, 0) scale(var(--omk-ui-scale));
+  transition: transform 380ms cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
+}
+
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation::before {
+  position: absolute;
+  z-index: 0;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc((100% - 8px) / 3);
+  border-radius: 28px;
+  background: rgb(0 0 0 / 10%);
+  background: color-mix(in srgb, var(--m-color-on-surface) 10%, transparent);
+  background-image: radial-gradient(
+    circle 72px at var(--omk-liquid-nav-highlight-x) 50%,
+    rgb(255 255 255 / 18%),
+    transparent 72%
+  );
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 20%),
+    inset 0 0 10px rgb(0 0 0 / 8%), 0 4px 12px rgb(0 0 0 / 10%);
+  content: '';
+  pointer-events: none;
+  transform: translate3d(calc(var(--omk-liquid-nav-index) * 100%), 0, 0)
+    scale(var(--omk-liquid-nav-scale));
+  transform-origin: center;
+  transition: transform 380ms cubic-bezier(0.16, 1, 0.3, 1),
+    background-color 160ms linear, box-shadow 160ms linear;
+  will-change: transform;
+}
+
+:root[data-theme-resolved='dark'][data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation::before {
+  background: rgb(255 255 255 / 10%);
+  background: color-mix(in srgb, var(--m-color-on-surface) 10%, transparent);
+  background-image: radial-gradient(
+    circle 72px at var(--omk-liquid-nav-highlight-x) 50%,
+    rgb(255 255 255 / 14%),
+    transparent 72%
+  );
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 18%),
+    0 4px 14px rgb(0 0 0 / 22%);
+}
+
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation .m-navigation-bar__row {
+  position: relative;
+  z-index: 1;
+}
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation .m-navigation-bar__row::before { display: none; }
+
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation .m-navigation-bar__item {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  transition: transform 180ms cubic-bezier(0.16, 1, 0.3, 1), opacity 120ms linear;
+}
+
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation.is-pressing .m-navigation-bar__item--selected {
+  transform: scale(1.08);
+}
+
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation.is-pressing::before {
+  box-shadow: inset 0 0 8px rgb(0 0 0 / 15%),
+    inset 0 0 0 1px rgb(255 255 255 / 18%),
+    -1px 0 0 rgb(0 174 255 / 10%), 1px 0 0 rgb(255 74 116 / 10%),
+    0 4px 14px rgb(0 0 0 / 14%);
+}
+
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation.is-dragging,
+:root[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation.is-dragging::before {
+  transition: none;
+}
+:root[data-floating-bottom-bar='true'] .main-navigation.is-dragging
+  .m-navigation-bar__row::before {
+  transition: none;
+}
+:root.m-theme-dark[data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation .m-navigation-bar__item--selected {
+  /* The shared ::before lens paints the selected state.  Keep the button
+   * itself transparent so the lens can slide freely between tabs in dark
+   * mode as well. */
+  background: transparent;
+}
+
+/* Match KernelSU's opaque fallback when the WebView cannot provide a
+ * backdrop blur surface. */
+:root[data-backdrop-blur-supported='false'][data-bar-blur='true'] .m-top-app-bar,
+:root[data-backdrop-blur-supported='false'][data-bar-blur='true'][data-floating-bottom-bar='false']
+  .main-navigation {
+  background: var(--m-color-surface) !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+:root[data-backdrop-blur-supported='false'][data-floating-bottom-bar='true'][data-liquid-glass='true']
+  .main-navigation {
+  background: var(--m-color-surface-container);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.confirm-sheet { display: grid; gap: 18px; padding-top: 4px; }
+.confirm-sheet p { margin: 0; overflow-wrap: anywhere; color: var(--m-color-on-surface-variant-summary); line-height: 1.45; }
+.confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.confirm-actions .m-button { gap: 6px; }
+.targets-view {
+  min-height: calc(100vh / var(--omk-ui-scale));
+  min-height: calc(100dvh / var(--omk-ui-scale));
+}
+@media (max-width: 430px) {
+  .identity-grid { gap: 8px; }
+  .identity-card > .m-card { padding: 12px; }
+}
+@media (max-width: 360px) {
+  .app-page { --omk-page-side: 10px; }
+  .identity-card > .m-card { padding: 10px; }
+  .identity-field strong { font-size: 13px; }
+  .identity-field--primary strong { font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ---------------------------------------------------------------------------
+ * R1 wallpaper and glass surfaces.
+ *
+ * The picture is a module asset written by the keymint helper
+ * (webroot/assets/wallpaper/), so it is available offline and survives a
+ * module update through the copy under the module state directory.
+ *
+ * Contrast rule: the scrim dims the photo before any text sits on it, and a
+ * panel that cannot blur (older WebView without backdrop-filter) stays
+ * nearly opaque instead of turning into unreadable glass.
+ * ------------------------------------------------------------------------ */
+:root {
+  --omk-wallpaper-url: none;
+  --omk-wallpaper-scrim: rgb(247 247 247 / 42%);
+  --omk-wallpaper-glass: rgb(255 255 255 / 58%);
+  --omk-wallpaper-glass-strong: rgb(255 255 255 / 78%);
+  --omk-wallpaper-edge: rgb(255 255 255 / 22%);
+  --omk-wallpaper-shadow: 0 6px 22px rgb(0 0 0 / 16%);
+  --omk-clear-glass-edge: rgb(255 255 255 / 55%);
+  --omk-clear-glass-halo: 0 0 2px rgb(255 255 255 / 85%), 0 0 10px rgb(255 255 255 / 60%);
+}
+:root.m-theme-dark,
+:root[data-theme-resolved='dark'] {
+  --omk-wallpaper-scrim: rgb(0 0 0 / 48%);
+  --omk-wallpaper-glass: rgb(30 30 30 / 58%);
+  --omk-wallpaper-glass-strong: rgb(24 24 24 / 80%);
+  --omk-wallpaper-edge: rgb(255 255 255 / 12%);
+  --omk-wallpaper-shadow: 0 6px 22px rgb(0 0 0 / 42%);
+  --omk-clear-glass-edge: rgb(255 255 255 / 20%);
+  --omk-clear-glass-halo: 0 0 2px rgb(0 0 0 / 85%), 0 0 10px rgb(0 0 0 / 60%);
+}
+.omk-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-color: var(--m-color-surface);
+  background-image: var(--omk-wallpaper-url);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  pointer-events: none;
+}
+.omk-wallpaper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--omk-wallpaper-scrim);
+}
+:root[data-wallpaper] .omk-app,
+:root[data-wallpaper] .page-host { position: relative; z-index: 1; }
+
+/* Cards become frosted panels; the solid token stays as the first declaration
+ * so a WebView without color-mix() or backdrop-filter keeps a readable card. */
+:root[data-wallpaper] .m-card,
+:root[data-wallpaper] .m-surface,
+:root[data-wallpaper] .m-dropdown-preference__popup,
+:root[data-wallpaper] .m-dialog__content,
+:root[data-wallpaper] .m-bottom-sheet__content {
+  background-color: var(--omk-wallpaper-glass-strong);
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper] .m-card,
+  :root[data-wallpaper] .m-surface,
+  :root[data-wallpaper] .m-dropdown-preference__popup,
+  :root[data-wallpaper] .m-dialog__content,
+  :root[data-wallpaper] .m-bottom-sheet__content {
+    background-color: color-mix(in srgb, var(--m-color-surface-container) 58%, transparent);
+  }
+}
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-card,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-surface,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-dropdown-preference__popup,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-dialog__content,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-bottom-sheet__content {
+  -webkit-backdrop-filter: blur(26px) saturate(1.3);
+  backdrop-filter: blur(26px) saturate(1.3);
+  box-shadow: inset 0 0 0 1px var(--omk-wallpaper-edge), var(--omk-wallpaper-shadow);
+}
+:root[data-wallpaper] .diagnostics-card > .m-card,
+:root[data-wallpaper] .identity-card > .m-card {
+  background-color: transparent;
+}
+:root[data-wallpaper] .preference-card > .m-card {
+  background: var(--omk-wallpaper-glass-strong);
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper] .preference-card > .m-card {
+    background: color-mix(
+      in srgb,
+      var(--m-color-primary-container) var(--omk-preference-mix),
+      color-mix(in srgb, var(--m-color-surface-container) 58%, transparent)
+    );
+  }
+}
+/* Bars follow the same treatment only when the user asked for a blurred bar;
+ * otherwise a translucent bar over a photo loses its title contrast. */
+:root[data-wallpaper][data-bar-blur='true'] .m-top-app-bar,
+:root[data-wallpaper][data-bar-blur='true'] .main-navigation {
+  background: var(--omk-bar-background) !important;
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper][data-bar-blur='true'] .m-top-app-bar,
+  :root[data-wallpaper][data-bar-blur='true'] .main-navigation {
+    background: color-mix(in srgb, var(--m-color-surface) 62%, transparent) !important;
+  }
+}
+:root[data-wallpaper][data-bar-blur='true'][data-backdrop-blur-supported='true'] .m-top-app-bar,
+:root[data-wallpaper][data-bar-blur='true'][data-backdrop-blur-supported='true'] .main-navigation {
+  -webkit-backdrop-filter: blur(26px) saturate(1.3);
+  backdrop-filter: blur(26px) saturate(1.3);
+}
+/* Monet-tinted overrides above use !important; the wallpaper layer must not
+ * win over an explicit "no dynamic color" preference. */
+:root[data-wallpaper][data-monet='false'] .identity-card > .m-card,
+:root[data-wallpaper][data-monet='false'] .preference-card > .m-card,
+:root[data-wallpaper][data-monet='false'] .settings-card .m-card {
+  background: var(--omk-wallpaper-glass-strong) !important;
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper][data-monet='false'] .identity-card > .m-card,
+  :root[data-wallpaper][data-monet='false'] .preference-card > .m-card,
+  :root[data-wallpaper][data-monet='false'] .settings-card .m-card {
+    background: color-mix(in srgb, var(--m-color-surface-container) 58%, transparent) !important;
+  }
+}
+/* Home panels are clear glass: the photo shows through unblurred, so the rim
+ * outlines each panel and the text carries its own halo for contrast. */
+:root[data-wallpaper] .home-page .identity-card > .m-card,
+:root[data-wallpaper] .home-page .diagnostics-card > .m-card {
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 0 0 1px var(--omk-clear-glass-edge);
+  text-shadow: var(--omk-clear-glass-halo);
+}
+:root[data-wallpaper] .home-page .diagnostics-refresh {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--omk-clear-glass-edge);
+  text-shadow: var(--omk-clear-glass-halo);
+}
+/* The home title scrolls away with the page; the status-bar strip above it
+ * stays clear at the top and fades back in once the title has scrolled off. */
+:root[data-wallpaper] .app-page.home-page > .m-top-app-bar {
+  position: relative;
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  text-shadow: var(--omk-clear-glass-halo);
+}
+:root[data-wallpaper] .app-page.home-page > .m-top-app-bar::before { content: none; }
+/* Engines without scroll timelines keep the solid strip. The fade spans the
+ * 52px miuix title row, which .omk-app zooms by the interface scale. */
+@supports (animation-timeline: scroll()) {
+  :root[data-wallpaper][data-page='home'] body::before {
+    opacity: 0;
+    animation: omk-status-strip-in linear both;
+    animation-timeline: scroll(root block);
+    animation-range: 0 calc(52px * var(--omk-ui-scale));
+  }
+}
+@keyframes omk-status-strip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "webui",
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.15.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "sass": "^1.102.0",
+    "typescript": "~6.0.3",
+    "vite": "^8.2.0",
+    "vue-tsc": "^3.3.11"
+  },
+  "dependencies": {
+    "@material/material-color-utilities": "0.4.0",
+    "kernelsu-alt": "^3.1.2",
+    "miuix-vue": "0.1.1",
+    "motion-v": "^2.4.2",
+    "vue": "~3.5.42"
+  }
+}

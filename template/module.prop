@@ -1,0 +1,7 @@
+id=oh_my_keymint
+name=${moduleName}
+version=${versionName}
+versionCode=${versionCode}
+author=James Clef,ITxiao6666,浅笑呐
+description=${moduleDescription}
+updateJson=https://raw.githubusercontent.com/qianxiaoaa/OhMyKeymint-R1/changelog/update.json
