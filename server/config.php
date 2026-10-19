@@ -114,6 +114,11 @@ return [
     // 客户端只上报：证书序列号、keybox SHA-256、来源、检测时间。
     // 达到 report_threshold 个独立设备上报后，该序列号写入永久吊销名单。
     'report_threshold'    => 2,
+    // 防投毒：序列号不在在线快照（revocation.json）中时，需要这么多独立上报者
+    // 才允许入永久名单。快照已有的序列号本就会被下发拦截，低阈值只是固化；
+    // 无佐证时若也用低阈值，任意访问者拿 manifest 公开的序列号从少量 IP 上报
+    // 就能永久吊销全池 keybox（对全体用户的 DoS）。
+    'report_unverified_threshold' => 10,
     'report_rate_limit'   => 20,   // 单个上报者每窗口最多条数
     'report_rate_window'  => 3600, // 限流窗口（秒）
 

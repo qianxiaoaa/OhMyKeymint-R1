@@ -72,6 +72,39 @@ pub struct ManifestKeybox {
     /// Cloud-delivered notices shown by the client every time it fetches a keybox.
     /// Free-form text from the server, forwarded verbatim and never interpreted.
     pub notice: Vec<String>,
+    /// Revocation blocklist summary published by the server. Informational:
+    /// the client keeps using its own Google attestation cache for the local
+    /// revocation decision and never acts on these numbers.
+    pub revocation: ManifestRevocation,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ManifestRevocation {
+    pub version: i64,
+    pub permanent_count: i64,
+    pub permanent_updated_at: String,
+    pub report_count: i64,
+    pub pending_count: i64,
+    pub report_threshold: i64,
+    pub report_unverified_threshold: i64,
+    pub report_url: String,
+    pub checked: i64,
+    pub fresh: bool,
+    pub fetched_at: i64,
+    pub count: i64,
+    pub source: String,
+    pub tried: Vec<String>,
+    pub sources: Vec<RevocationSource>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RevocationSource {
+    pub source: String,
+    pub ok: bool,
+    pub count: i64,
+    pub why: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -630,6 +663,7 @@ fn verify_pool_bundle(
             validity: member.validity.clone(),
             rotation: manifest.keybox.rotation.clone(),
             notice: manifest.keybox.notice.clone(),
+            revocation: manifest.keybox.revocation.clone(),
         },
     };
     verify_bundle(server, &view, contents)
@@ -709,6 +743,24 @@ pub struct CloudStatus {
     /// Cloud-delivered notices from the manifest, forwarded verbatim for the WebUI
     /// to display in the dialog.
     pub notice: Vec<String>,
+    /// Revocation blocklist summary published by the server manifest. Purely
+    /// informational for the WebUI; the client revocation decision is unchanged.
+    pub revocation: CloudRevocation,
+}
+
+/// Fixed key shape so the WebUI can validate the reply strictly. Unknown or missing
+/// values are empty, `false`, or `-1` rather than absent keys.
+#[derive(Serialize)]
+pub struct CloudRevocation {
+    pub present: bool,
+    pub permanent_count: i64,
+    pub pending_count: i64,
+    pub report_threshold: i64,
+    pub report_unverified_threshold: i64,
+    pub checked: i64,
+    pub fresh: bool,
+    pub source: String,
+    pub fetched_at: i64,
 }
 
 impl CloudStatus {
@@ -747,6 +799,17 @@ impl CloudStatus {
             rotation_current_index: 0,
             is_current: false,
             notice: Vec::new(),
+            revocation: CloudRevocation {
+                present: false,
+                permanent_count: 0,
+                pending_count: 0,
+                report_threshold: 0,
+                report_unverified_threshold: 0,
+                checked: 0,
+                fresh: false,
+                source: String::new(),
+                fetched_at: 0,
+            },
         }
     }
 }
@@ -788,6 +851,18 @@ pub fn status_report() -> Result<CloudStatus> {
             status.rotation_current_index = manifest.keybox.rotation.current_index;
             status.is_current = !next.is_empty() && installed == next;
             status.notice = manifest.keybox.notice.clone();
+            let revocation = &manifest.keybox.revocation;
+            status.revocation = CloudRevocation {
+                present: true,
+                permanent_count: revocation.permanent_count,
+                pending_count: revocation.pending_count,
+                report_threshold: revocation.report_threshold,
+                report_unverified_threshold: revocation.report_unverified_threshold,
+                checked: revocation.checked,
+                fresh: revocation.fresh,
+                source: revocation.source.clone(),
+                fetched_at: revocation.fetched_at,
+            };
         }
         Err(error) => {
             status.cloud = "unreachable";

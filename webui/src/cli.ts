@@ -245,6 +245,20 @@ export interface CloudKeyboxStatus {
   rotation_current_index: number
   is_current: boolean
   notice: string[]
+  revocation: CloudRevocation
+}
+
+// Field order mirrors the Rust serializer.
+export interface CloudRevocation {
+  present: boolean
+  permanent_count: number
+  pending_count: number
+  report_threshold: number
+  report_unverified_threshold: number
+  checked: number
+  fresh: boolean
+  source: string
+  fetched_at: number
 }
 
 // Field order mirrors the Rust serializer.
@@ -615,10 +629,25 @@ function parseCloudKeyboxStatus(output: string): CloudKeyboxStatus {
       || !nonNegative(parsed.rotation_pool_size)
       || !nonNegative(parsed.rotation_current_index)
       || typeof parsed.is_current !== 'boolean'
-      || !isNoticeList(parsed.notice)) {
+      || !isNoticeList(parsed.notice)
+      || !isCloudRevocation(parsed.revocation)) {
     throw new Error('OMK returned an invalid cloud Keybox status')
   }
   return parsed as unknown as CloudKeyboxStatus
+}
+
+function isCloudRevocation(value: unknown): value is CloudRevocation {
+  if (!isRecord(value)) return false
+  const nonNegative = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
+  return typeof value.present === 'boolean'
+    && nonNegative(value.permanent_count)
+    && nonNegative(value.pending_count)
+    && nonNegative(value.report_threshold)
+    && nonNegative(value.report_unverified_threshold)
+    && nonNegative(value.checked)
+    && typeof value.fresh === 'boolean'
+    && isSafeTextOrEmpty(value.source, 256)
+    && nonNegative(value.fetched_at)
 }
 
 function parseCloudKeyboxApply(output: string): CloudKeyboxApplyResult {

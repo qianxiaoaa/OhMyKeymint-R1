@@ -15,6 +15,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use kmr_common::consts::KEYSTORE_UID;
 use kmr_common::runtime::fs::atomic_replace_preserving_metadata;
 use log::info;
 use serde::Serialize;
@@ -77,8 +78,11 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700))
         .with_context(|| format!("failed to protect {}", path.display()))?;
     let metadata = fs::metadata(path)?;
-    if !metadata.is_dir() || metadata.uid() != 0 {
-        bail!("{} is not a root-owned directory", path.display());
+    if !metadata.is_dir() || (metadata.uid() != 0 && metadata.uid() != KEYSTORE_UID) {
+        bail!(
+            "{} is not a root- or keystore-owned directory",
+            path.display()
+        );
     }
     Ok(())
 }

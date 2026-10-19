@@ -69,8 +69,20 @@ base64 或 64 位 hex。
     `signature` / `validity`，`pool[0]` 恒等于 manifest 里那份 keybox，`pool[N]`
     与 `action=keybox&offset=N` 一一对应；
   - `excluded`：本轮被吊销名单拦截、既不下发也不进 pool 的成员数。
-  已吊销成员永远不会进 pool、也不会经 `action=keybox` 下发（请求时以手工列表 +
-  永久名单 + 最新在线快照做最终拦截）。
+已吊销成员永远不会进 pool、也不会经 `action=keybox` 下发（请求时以手工列表 +
+   永久名单 + 最新在线快照做最终拦截）。
+
+## 吊销状态发布与上报阈值
+
+`manifest.json` 的 `keybox.revocation` 段随清单下发当前吊销状态与上报阈值，
+供客户端绑定展示（只读透传，客户端不做本地吊销判定）：
+
+- `permanent_count` / `pending_count`：永久名单条数、尚未达阈值的上报数；
+- `report_threshold`：在线快照已收录该序列号时，入永久名单所需的上报数；
+- `report_unverified_threshold`：序列号不在快照中时的所需上报数（防投毒，默认 10）；
+- `checked` / `count` / `source` / `fetched_at` / `fresh`：本轮核对序列号数、
+  快照条数、快照来源、抓取时间与新鲜度；
+- `sources`：各吊销源本次的成功状态与条目数。
 
 ## 云端通告
 

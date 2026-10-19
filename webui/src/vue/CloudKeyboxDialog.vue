@@ -55,6 +55,17 @@ const PREVIEW_STATUS: CloudKeyboxStatus = {
   rotation_current_index: 0,
   is_current: false,
   notice: [],
+  revocation: {
+    present: true,
+    permanent_count: 7,
+    pending_count: 2,
+    report_threshold: 2,
+    report_unverified_threshold: 10,
+    checked: 3,
+    fresh: true,
+    source: 'google+purainity',
+    fetched_at: Math.floor(Date.now() / 1000) - 600,
+  },
 }
 const PREVIEW_ROT: RootOfTrustStatus = {
   mode: 'auto',
@@ -125,6 +136,19 @@ const cloudBadge = computed(() => {
     return { key: 'bad', text: tr('cloud_keybox_state_unreachable', 'Unreachable') }
   }
   return { key: 'off', text: tr('cloud_keybox_state_off', 'Disabled') }
+})
+
+const revBadge = computed(() => {
+  const value = cloud.value
+  if (value === null) return { key: '', text: '' }
+  const revocation = value.revocation
+  if (!revocation.present) {
+    return { key: '', text: tr('cloud_keybox_rev_absent', 'Not published') }
+  }
+  if (revocation.fresh) {
+    return { key: 'ok', text: tr('cloud_keybox_rev_fresh', 'Fresh') }
+  }
+  return { key: 'warn', text: tr('cloud_keybox_rev_stale', 'Stale cache') }
 })
 
 const rotBadge = computed(() => {
@@ -402,6 +426,34 @@ async function repin(): Promise<void> {
             <span class="cloud-dialog__value">{{ cloud.last_status }}{{ cloud.last_source ? ` · ${shortDigest(cloud.last_sha256)}` : '' }}</span>
           </div>
           <p v-if="cloud.last_error" class="cloud-dialog__error" role="alert">{{ cloud.last_error }}</p>
+        </MiuixCard>
+
+        <MiuixSmallTitle :text="tr('cloud_keybox_revocation', 'Revocation list')" />
+        <MiuixCard class="cloud-dialog__card" press-feedback="none">
+          <div class="cloud-dialog__row">
+            <span class="cloud-dialog__label">{{ tr('cloud_keybox_rev_state', 'State') }}</span>
+            <span class="cloud-dialog__value" :data-badge="revBadge.key">{{ revBadge.text }}</span>
+          </div>
+          <div v-if="cloud.revocation.present" class="cloud-dialog__row">
+            <span class="cloud-dialog__label">{{ tr('cloud_keybox_rev_permanent', 'Permanent list') }}</span>
+            <span class="cloud-dialog__value">{{ cloud.revocation.permanent_count }} · {{ tr('cloud_keybox_rev_pending', 'pending') }} {{ cloud.revocation.pending_count }}</span>
+          </div>
+          <div v-if="cloud.revocation.present" class="cloud-dialog__row">
+            <span class="cloud-dialog__label">{{ tr('cloud_keybox_rev_threshold', 'Report threshold') }}</span>
+            <span class="cloud-dialog__value">{{ cloud.revocation.report_threshold }}{{ cloud.revocation.report_unverified_threshold > 0 ? ` · ${cloud.revocation.report_unverified_threshold}` : '' }}</span>
+          </div>
+          <div v-if="cloud.revocation.present" class="cloud-dialog__row">
+            <span class="cloud-dialog__label">{{ tr('cloud_keybox_rev_checked', 'Checked serials') }}</span>
+            <span class="cloud-dialog__value">{{ cloud.revocation.checked }}</span>
+          </div>
+          <div v-if="cloud.revocation.present && cloud.revocation.source" class="cloud-dialog__row">
+            <span class="cloud-dialog__label">{{ tr('cloud_keybox_rev_source', 'List source') }}</span>
+            <span class="cloud-dialog__value cloud-dialog__value--wrap">{{ cloud.revocation.source }}</span>
+          </div>
+          <div v-if="cloud.revocation.present" class="cloud-dialog__row">
+            <span class="cloud-dialog__label">{{ tr('cloud_keybox_rev_fetched', 'Fetched at') }}</span>
+            <span class="cloud-dialog__value">{{ formatTime(cloud.revocation.fetched_at) }}</span>
+          </div>
         </MiuixCard>
 
         <MiuixSmallTitle :text="tr('cloud_keybox_preferences', 'Preferences')" />

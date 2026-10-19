@@ -56,8 +56,20 @@ if (!function_exists('rev_parse')) {
             if ($hex === '' || $hex === '0') {
                 continue;
             }
-            $status = is_array($info) ? (string)($info['status'] ?? 'REVOKED') : 'REVOKED';
-            $reason = is_array($info) ? (string)($info['reason'] ?? '') : '';
+            if (is_array($info)) {
+                // 数组形式：status 字段缺失时按 REVOKED 处理（兼容只给 reason 的源）。
+                $status = strtoupper(trim((string)($info['status'] ?? 'REVOKED')));
+                $reason = (string)($info['reason'] ?? '');
+            } else {
+                // 纯字符串形式：旧式 "entries":{"123":"REVOKED"}。
+                $status = strtoupper(trim((string)$info));
+                $reason = '';
+            }
+            // 只有明确标注 REVOKED 的条目参与黑名单。ACTIVE 或其它状态一律忽略，
+            // 防止镜像里混入非吊销条目把有效 keybox 误封、进而污染永久名单。
+            if ($status !== 'REVOKED') {
+                continue;
+            }
             if (!isset($out[$hex])) {
                 $out[$hex] = [
                     'status'  => $status,
@@ -851,6 +863,11 @@ if (!function_exists('rev_report_ingest')) {
         $r = $v['report'];
         $hex = $r['hex'];
         $threshold = max(1, (int)($cfg['report_threshold'] ?? 2));
+        // 序列号不在在线快照中时，需要更多独立上报者才允许入永久名单（防投毒）：
+        // 快照里已有的序列号本就会被下发拦截，提升只是固化，可用低阈值；
+        // 没有快照佐证时若仍用低阈值，任意访问者拿 manifest 公开的序列号
+        // 从 2 个 IP 上报就能永久吊销全池 keybox，造成对全体用户的 DoS。
+        $unverifiedThreshold = max(1, (int)($cfg['report_unverified_threshold'] ?? 10));
 
         $reports = rev_mutate_json(rev_reports_path($cfg), function (array $data) use ($r, $hex, $reporter): array {
             if (!isset($data['serials']) || !is_array($data['serials'])) {
@@ -893,12 +910,25 @@ if (!function_exists('rev_report_ingest')) {
         $entry = $reports['serials'][$hex];
         $distinct = count($entry['reporters']);
         $promoted = false;
-        if ($distinct >= $threshold && empty($entry['promoted'])) {
-            rev_mutate_json(rev_permanent_path($cfg), function (array $data) use ($hex, $entry, $distinct): array {
+        // 防投毒判定：是否已在在线快照（revocation.json）中。
+        $cache = rev_load(rtrim((string)$cfg['data_dir'], '/') . '/revocation.json');
+        $inSnapshot = $cache !== null && isset($cache['entries'][$hex]);
+        $needed = $inSnapshot ? $threshold : max($threshold, $unverifiedThreshold);
+        if ($distinct >= $needed && empty($entry['promoted'])) {
+            // 快照佐证来源追加入永久名单，便于运维区分「快照佐证」与「大量客户端独立上报」。
+            $snapSources = $inSnapshot ? ($cache['entries'][$hex]['sources'] ?? []) : [];
+            $sources = array_map(fn($s) => 'client:' . $s, $entry['sources'] ?? []);
+            foreach ($snapSources as $s) {
+                $s = (string)$s;
+                if ($s !== '' && !in_array('snapshot:' . $s, $sources, true)) {
+                    $sources[] = 'snapshot:' . $s;
+                }
+            }
+            rev_mutate_json(rev_permanent_path($cfg), function (array $data) use ($hex, $entry, $distinct, $sources): array {
                 $res = rev_permanent_add($data, $hex, [
                     'status'             => 'REVOKED',
                     'reason'             => $entry['reasons'][0] ?? '',
-                    'sources'            => array_map(fn($s) => 'client:' . $s, $entry['sources'] ?? []),
+                    'sources'            => $sources,
                     'confidence'         => 'client_confirmed',
                     'reports'            => $distinct,
                     'distinct_reporters' => $distinct,
