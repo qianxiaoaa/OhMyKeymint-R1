@@ -294,6 +294,16 @@
     <string name="cloud_keybox_applied">Cloud Keybox installed. KeyMint restarts automatically.</string>
     <string name="cloud_keybox_unchanged">The installed Keybox is already the newest one.</string>
     <string name="cloud_keybox_fetch_now">Fetch now</string>
+    <string name="cloud_keybox_step1_button">Fetch and replace Keybox</string>
+    <string name="cloud_keybox_step2_button">Check for cloud updates</string>
+    <string name="cloud_keybox_step3_button">Fetch the second Keybox</string>
+    <string name="cloud_keybox_step1_hint">1st round: fetch a Keybox from the cloud and replace the installed one</string>
+    <string name="cloud_keybox_step2_hint">2nd round: check whether the cloud has a newer Keybox</string>
+    <string name="cloud_keybox_step3_hint">3rd round: fetch the second Keybox from the cloud</string>
+    <string name="cloud_keybox_working">Fetching the Keybox from the cloud…</string>
+    <string name="cloud_keybox_success">Keybox fetched successfully</string>
+    <string name="cloud_keybox_latest">Your Keybox is already the newest one.</string>
+    <string name="cloud_keybox_cloud_problem">Something is wrong with the cloud. Please try again later.</string>
     <string name="cloud_keybox_preview">Preview only. Device settings cannot be saved here.</string>
     <string name="rot_title">Root of trust</string>
     <string name="rot_desc">KeyBlobs are encrypted with a key derived from vb_key and vb_hash. OMK pins both values whenever the Keybox changes, so a changed vbmeta no longer invalidates the stored keys.</string>

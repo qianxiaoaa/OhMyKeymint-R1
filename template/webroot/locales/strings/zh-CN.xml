@@ -294,6 +294,16 @@
     <string name="cloud_keybox_applied">云端 Keybox 已安装，KeyMint 会自动重启。</string>
     <string name="cloud_keybox_unchanged">当前安装的 Keybox 已是最新。</string>
     <string name="cloud_keybox_fetch_now">立即获取</string>
+    <string name="cloud_keybox_step1_button">从云端获取并更换 Keybox</string>
+    <string name="cloud_keybox_step2_button">检查云端是否有更新</string>
+    <string name="cloud_keybox_step3_button">从云端获取第二个 Keybox</string>
+    <string name="cloud_keybox_step1_hint">第 1 次：从云端获取 keybox 并更换</string>
+    <string name="cloud_keybox_step2_hint">第 2 次：检查云端 keybox 是否更新</string>
+    <string name="cloud_keybox_step3_hint">第 3 次：从云端轮询获取第二个 keybox</string>
+    <string name="cloud_keybox_working">正在从云端获取keybox</string>
+    <string name="cloud_keybox_success">成功获取keybox</string>
+    <string name="cloud_keybox_latest">你的keybox是最新的啦。</string>
+    <string name="cloud_keybox_cloud_problem">云端有点问题呢。请等等再来吧。</string>
     <string name="cloud_keybox_preview">仅为界面预览，此处无法保存设备设置。</string>
     <string name="rot_title">信任根</string>
     <string name="rot_desc">KeyBlob 的加密密钥由 vb_key 与 vb_hash 派生。更换 Keybox 时这两个值会自动就绪，vbmeta 变化不再让已存密钥失效（InvalidKeyBlob / -33）。</string>

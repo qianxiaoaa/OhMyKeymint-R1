@@ -54,6 +54,7 @@ const PREVIEW_STATUS: CloudKeyboxStatus = {
   rotation_pool_size: 0,
   rotation_current_index: 0,
   is_current: false,
+  notice: [],
 }
 const PREVIEW_ROT: RootOfTrustStatus = {
   mode: 'auto',
@@ -80,6 +81,11 @@ const verifySignature = ref(true)
 const baseUrl = ref('')
 const pubkey = ref('')
 const purgeKeys = ref(true)
+// Single-point trigger: every time the dialog opens the cycle starts at step 1.
+// Step 1 fetches and replaces the Keybox, step 2 checks for a cloud update and
+// applies it when one exists, step 3 fetches the second Keybox. Not persisted.
+const step = ref<1 | 2 | 3>(1)
+const operationMessage = ref('')
 let generation = 0
 
 function tr(key: string, fallback: string): string {
@@ -192,8 +198,13 @@ async function load(): Promise<void> {
 }
 
 watch(() => props.modelValue, open => {
-  if (open) void load()
-  else generation++
+  if (open) {
+    step.value = 1
+    operationMessage.value = ''
+    void load()
+  } else {
+    generation++
+  }
 })
 
 function requestClose(): boolean {
@@ -229,22 +240,57 @@ async function saveSettings(): Promise<void> {
   }
 }
 
-async function fetchNow(): Promise<void> {
+const stepLabel = computed(() => {
+  if (step.value === 1) return tr('cloud_keybox_step1_button', 'Fetch and replace Keybox')
+  if (step.value === 2) return tr('cloud_keybox_step2_button', 'Check for cloud updates')
+  return tr('cloud_keybox_step3_button', 'Fetch the second Keybox')
+})
+
+const stepHint = computed(() => {
+  if (step.value === 1) return tr('cloud_keybox_step1_hint', '1st round: fetch a Keybox from the cloud and replace the installed one')
+  if (step.value === 2) return tr('cloud_keybox_step2_hint', '2nd round: check whether the cloud has a newer Keybox')
+  return tr('cloud_keybox_step3_hint', '3rd round: fetch the second Keybox from the cloud')
+})
+
+async function runCloudAction(): Promise<void> {
   if (!canFetch.value) return
   busy.value = 'fetch'
   errorMessage.value = ''
+  operationMessage.value = tr('cloud_keybox_working', 'Fetching the Keybox from the cloud…')
   try {
-    const result = await props.cli.applyCloudKeybox()
-    emit('notify', result.applied
-      ? tr('cloud_keybox_applied', 'Cloud Keybox installed. KeyMint restarts automatically.')
-      : tr('cloud_keybox_unchanged', 'The installed Keybox is already the newest one.'), false)
-    if (result.applied) emit('changed')
+    if (!preview) {
+      const result = await (step.value === 1
+        ? props.cli.applyCloudKeybox()
+        : step.value === 2
+          ? props.cli.checkCloudKeyboxUpdate()
+          : props.cli.getSecondCloudKeybox())
+      const changed = result.applied
+      if (step.value === 2 && !changed) {
+        emit('notify', tr('cloud_keybox_latest', 'Your Keybox is already the newest one.'), false)
+      } else {
+        emit('notify', tr('cloud_keybox_success', 'Keybox fetched successfully'), false)
+        if (changed) emit('changed')
+      }
+      // Cloud notices: server-configured prompts shown without touching existing texts.
+      for (const line of result.notice) {
+        emit('notify', line, false)
+      }
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 600))
+      const changed = step.value !== 2
+      emit('notify', step.value === 2
+        ? tr('cloud_keybox_latest', 'Your Keybox is already the newest one.')
+        : tr('cloud_keybox_success', 'Keybox fetched successfully'), false)
+      if (changed) emit('changed')
+    }
+    step.value = step.value === 3 ? 1 : ((step.value + 1) as 1 | 2 | 3)
     await load()
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
-    emit('notify', errorMessage.value, true)
+    emit('notify', tr('cloud_keybox_cloud_problem', 'Something is wrong with the cloud. Please try again later.'), true)
   } finally {
     busy.value = null
+    operationMessage.value = ''
   }
 }
 
@@ -277,6 +323,14 @@ async function repin(): Promise<void> {
       <p class="cloud-dialog__hint">
         {{ tr('cloud_keybox_desc', 'Fetch a signed Keybox from your own server. Every download is verified with an Ed25519 signature and the published SHA-256 before it is installed.') }}
       </p>
+
+      <template v-if="cloud !== null && cloud.notice.length > 0">
+        <div class="cloud-dialog__notice" role="note">
+          <p v-for="line in cloud.notice" :key="line" class="cloud-dialog__notice-line">
+            {{ line }}
+          </p>
+        </div>
+      </template>
 
       <div v-if="status === 'loading'" class="cloud-dialog__loading" role="status">
         <MiuixProgressIndicator type="circular" :size="28" />
@@ -442,9 +496,9 @@ async function repin(): Promise<void> {
             <MiuixProgressIndicator v-if="busy === 'settings'" type="circular" :size="18" />
             {{ tr('functional_button_save', 'Save') }}
           </MiuixButton>
-          <MiuixButton :disabled="!canFetch" @click="fetchNow">
+          <MiuixButton type="primary" :disabled="!canFetch" @click="runCloudAction">
             <MiuixProgressIndicator v-if="busy === 'fetch'" type="circular" :size="18" />
-            {{ tr('cloud_keybox_fetch_now', 'Fetch now') }}
+            {{ stepLabel }}
           </MiuixButton>
           <MiuixButton :disabled="!canRepin" @click="repin">
             <MiuixProgressIndicator v-if="busy === 'repin'" type="circular" :size="18" />
@@ -452,6 +506,9 @@ async function repin(): Promise<void> {
           </MiuixButton>
         </template>
       </div>
+      <p class="cloud-dialog__hint" role="status">
+        {{ operationMessage || stepHint }}
+      </p>
     </div>
   </MiuixDialog>
 </template>
@@ -459,6 +516,8 @@ async function repin(): Promise<void> {
 <style scoped>
 .cloud-dialog { display: flex; flex-direction: column; gap: 12px; }
 .cloud-dialog__hint { margin: 0; color: var(--m-color-on-surface-variant-summary); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.cloud-dialog__notice { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 12px; background: color-mix(in srgb, var(--m-color-warning, #b26a00) 12%, transparent); }
+.cloud-dialog__notice-line { margin: 0; color: var(--m-color-on-surface); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .cloud-dialog__error { margin: 0; color: var(--m-color-error); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .cloud-dialog__loading { display: flex; min-height: 64px; align-items: center; justify-content: center; gap: 12px; color: var(--m-color-on-surface-variant-summary); }
 .cloud-dialog__card { padding: 4px 14px; }

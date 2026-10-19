@@ -244,6 +244,7 @@ export interface CloudKeyboxStatus {
   rotation_pool_size: number
   rotation_current_index: number
   is_current: boolean
+  notice: string[]
 }
 
 // Field order mirrors the Rust serializer.
@@ -257,6 +258,7 @@ export interface CloudKeyboxApplyResult {
   min_not_after: string | null
   rotation: string | null
   note: string
+  notice: string[]
 }
 
 function parseCanonicalJson(output: string, description: string): unknown {
@@ -291,6 +293,14 @@ function isSafeText(value: unknown, maxLength: number): value is string {
 
 function isPifProduct(value: unknown): value is string {
   return isSafeText(value, MAX_PIF_PRODUCT_LENGTH) && PIF_PRODUCT_RE.test(value)
+}
+
+// Cloud-delivered notices: each line is bounded, and the list is bounded so a
+// misbehaving server cannot push unbounded memory or UI content.
+function isNoticeList(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length <= 16
+    && value.every(line => isSafeText(line, 512))
 }
 
 function parsePifDevice(value: unknown): PifDevice {
@@ -565,7 +575,7 @@ function parseCloudKeyboxStatus(output: string): CloudKeyboxStatus {
         'last_source', 'last_status', 'last_error', 'installed_sha256', 'cloud', 'cloud_error',
         'server_version', 'next_source', 'next_sha256', 'next_size', 'next_level', 'next_ok',
         'next_days_remaining', 'next_min_not_after', 'rotation_enabled', 'rotation_pool_size',
-        'rotation_current_index', 'is_current',
+        'rotation_current_index', 'is_current', 'notice',
       ])
       || typeof parsed.enabled !== 'boolean'
       || !isSafeTextOrEmpty(parsed.base_url, 512)
@@ -604,7 +614,8 @@ function parseCloudKeyboxStatus(output: string): CloudKeyboxStatus {
       || typeof parsed.rotation_enabled !== 'boolean'
       || !nonNegative(parsed.rotation_pool_size)
       || !nonNegative(parsed.rotation_current_index)
-      || typeof parsed.is_current !== 'boolean') {
+      || typeof parsed.is_current !== 'boolean'
+      || !isNoticeList(parsed.notice)) {
     throw new Error('OMK returned an invalid cloud Keybox status')
   }
   return parsed as unknown as CloudKeyboxStatus
@@ -614,9 +625,9 @@ function parseCloudKeyboxApply(output: string): CloudKeyboxApplyResult {
   const parsed = parseCanonicalJson(output, 'cloud Keybox result')
   if (!isRecord(parsed)
       || !hasOnlyKeys(parsed, [
-        'ok', 'applied', 'source', 'sha256', 'size', 'days_remaining', 'min_not_after',
-        'rotation', 'note',
-      ])
+'ok', 'applied', 'source', 'sha256', 'size', 'days_remaining', 'min_not_after',
+         'rotation', 'note', 'notice',
+       ])
       || typeof parsed.ok !== 'boolean'
       || typeof parsed.applied !== 'boolean'
       || !isSafeTextOrEmpty(parsed.source, 256)
@@ -629,7 +640,8 @@ function parseCloudKeyboxApply(output: string): CloudKeyboxApplyResult {
         && (typeof parsed.days_remaining !== 'number' || !Number.isSafeInteger(parsed.days_remaining)))
       || (parsed.min_not_after !== null && !isSafeText(parsed.min_not_after, 64))
       || (parsed.rotation !== null && !isSafeText(parsed.rotation, 32))
-      || !isSafeText(parsed.note, 256)) {
+      || !isSafeText(parsed.note, 256)
+      || !isNoticeList(parsed.notice)) {
     throw new Error('OMK returned an invalid cloud Keybox result')
   }
   return parsed as unknown as CloudKeyboxApplyResult
@@ -1106,6 +1118,30 @@ export class Cli {
     const output = await this.#run(
       keymint,
       ['--webui-apply-cloud-keybox'],
+      MAX_CLOUD_KEYBOX_JSON_BYTES,
+    )
+    const result = parseCloudKeyboxApply(output)
+    if (!result.ok) throw new Error(result.note)
+    return result
+  }
+
+  async checkCloudKeyboxUpdate(): Promise<CloudKeyboxApplyResult> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-check-cloud-keybox-update'],
+      MAX_CLOUD_KEYBOX_JSON_BYTES,
+    )
+    const result = parseCloudKeyboxApply(output)
+    if (!result.ok) throw new Error(result.note)
+    return result
+  }
+
+  async getSecondCloudKeybox(): Promise<CloudKeyboxApplyResult> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-get-second-cloud-keybox'],
       MAX_CLOUD_KEYBOX_JSON_BYTES,
     )
     const result = parseCloudKeyboxApply(output)

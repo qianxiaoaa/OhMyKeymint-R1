@@ -131,7 +131,7 @@ fn release_label(module_prop: &str) -> String {
 }
 
 fn success_description(label: &str) -> String {
-    format!("✅ {label}已成功运行。已成功连接云端。就等着被我格你机机吧😄 【本模块由【浅笑呐】二改自用】")
+    format!("✅ {label}已成功运行。已成功连接云端。就等着被我格你机机吧😄 【本模块由【浅笑呐】二改自用，属免费模块，倒卖可耻。】")
 }
 
 fn failure_description() -> String {

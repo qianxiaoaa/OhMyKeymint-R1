@@ -69,6 +69,9 @@ pub struct ManifestKeybox {
     pub sign_public: String,
     pub validity: KeyboxValidity,
     pub rotation: KeyboxRotation,
+    /// Cloud-delivered notices shown by the client every time it fetches a keybox.
+    /// Free-form text from the server, forwarded verbatim and never interpreted.
+    pub notice: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -88,6 +91,32 @@ pub struct KeyboxRotation {
     pub enabled: bool,
     pub pool_size: i64,
     pub current_index: i64,
+    /// The filtered rotation pool, in rotation order starting from the current
+    /// member. `pool[0]` equals the member this manifest describes; `pool[N]`
+    /// matches `action=keybox&offset=N`. Revoked members never appear here.
+    pub pool: Vec<RotationPoolMember>,
+}
+
+/// One rotation pool member as published inside the manifest. Every member is
+/// signed with the same anchor, so the digests and signatures here can be used
+/// to verify a member fetched with an `offset` request.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct RotationPoolMember {
+    pub source: String,
+    pub sha256: String,
+    pub size: i64,
+    pub signature: String,
+    pub validity: KeyboxValidity,
+}
+
+/// Decides whether a cloud refresh may skip the keybox download. Passive checks
+/// (the auto-fetch worker, the WebUI "check for update" click) only download the
+/// payload when the manifest no longer matches the installed keybox.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RefreshPolicy {
+    AlwaysFetch,
+    SkipIfInstalled,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,6 +130,9 @@ pub struct ApplyReport {
     pub min_not_after: Option<String>,
     pub rotation: Option<String>,
     pub note: String,
+    /// Cloud-delivered notices from the manifest, forwarded verbatim for the WebUI
+    /// to display alongside the fetch result.
+    pub notice: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -244,6 +276,30 @@ pub fn fetch_keybox(server: &ServerConfig, manifest: &Manifest) -> Result<Vec<u8
     .context("failed to fetch the cloud keybox")
 }
 
+/// Fetches a specific rotation member with `action=keybox&offset=N` (offset=0 is
+/// the member the manifest describes, offset=1 is the second keybox). Totally
+/// non-destructive: the server never advances `rotation.json` for an offset
+/// request. The URL is built from the configured base so the host-anchored
+/// allowlist still applies.
+fn fetch_keybox_at_offset(server: &ServerConfig, offset: u32) -> Result<Vec<u8>> {
+    let url = join_url(
+        server.base_url.trim(),
+        &format!("/index.php?action=keybox&offset={offset}"),
+    );
+    let uri: Uri = url
+        .parse()
+        .context("cloud keybox download URL is invalid")?;
+    if !make_allowlist(server)(&uri) {
+        bail!("cloud keybox download URL points outside the configured host");
+    }
+    webui_http::download_https(
+        uri,
+        &policy("cloud keybox", MAX_KEYBOX_DOWNLOAD_BYTES, "256 KiB"),
+        make_allowlist(server),
+    )
+    .context("failed to fetch the cloud keybox")
+}
+
 /// Verifies digest, signature and validity report before anything is installed.
 pub fn verify_bundle(server: &ServerConfig, manifest: &Manifest, contents: &[u8]) -> Result<()> {
     if contents.is_empty() {
@@ -367,53 +423,228 @@ pub fn probe() -> Result<Manifest> {
     fetch_manifest(&server)
 }
 
-/// Fetches, verifies and installs one cloud keybox.
+/// Fetches, verifies and installs one cloud keybox. This is the explicit
+/// "change keybox" action: it always downloads the member the server delivers
+/// (advancing the shared rotation), even if it is the one already installed.
 pub fn apply_from_cloud() -> Result<ApplyReport> {
     let server = server_config()?;
     if !server.enabled {
         bail!("the cloud keybox is disabled (server.enabled=false)");
     }
-    let report = apply_with_config(&server)?;
+    let report = apply_with_config(&server, RefreshPolicy::AlwaysFetch)?;
     if report.applied {
-        let _ = webui_activity::record(
-            "cloud_keybox_applied",
-            &format!("{} {}", report.source, short_digest(&report.sha256)),
-        );
+        record_cloud_applied(&report);
     }
     Ok(report)
 }
 
-fn apply_with_config(server: &ServerConfig) -> Result<ApplyReport> {
+/// Manifest-first check: when the member the server is delivering already
+/// matches the installed keybox it reports "unchanged" without downloading
+/// anything; otherwise it fetches, verifies and installs the new one. Backs the
+/// WebUI "check for update" click and the automatic refresh worker.
+pub fn update_from_cloud() -> Result<ApplyReport> {
+    let server = server_config()?;
+    if !server.enabled {
+        bail!("the cloud keybox is disabled (server.enabled=false)");
+    }
+    let report = apply_with_config(&server, RefreshPolicy::SkipIfInstalled)?;
+    if report.applied {
+        record_cloud_applied(&report);
+    }
+    Ok(report)
+}
+
+/// Installs the second keybox of the cloud rotation pool (the member right after
+/// the one the manifest describes, `offset=1`). The manifest carries the
+/// member-level digest and signature, so the download is verified before install
+/// and skipped when it already matches the installed keybox. The request never
+/// moves the shared rotation pointer.
+pub fn second_from_cloud() -> Result<ApplyReport> {
+    let server = server_config()?;
+    if !server.enabled {
+        bail!("the cloud keybox is disabled (server.enabled=false)");
+    }
+    let report = (|| -> Result<ApplyReport> {
+        let manifest = fetch_manifest(&server)?;
+        if !manifest.keybox.rotation.enabled || manifest.keybox.rotation.pool.is_empty() {
+            bail!("the server has no rotation pool to draw a second keybox from");
+        }
+        if manifest.keybox.rotation.pool.len() < 2 {
+            bail!("the cloud rotation pool has only one keybox, there is no second one yet");
+        }
+        let member = &manifest.keybox.rotation.pool[1];
+        let expected = member.sha256.trim().to_ascii_lowercase();
+        if expected.is_empty() {
+            bail!("the server published no digest for the second keybox");
+        }
+        if installed_keybox_digest().as_deref() == Some(expected.as_str()) {
+            return Ok(report_skipped(
+                &member.source,
+                &expected,
+                member.size,
+                &member.validity,
+                rotation_label(&manifest.keybox.rotation),
+                manifest.keybox.notice.clone(),
+            ));
+        }
+        let contents = fetch_keybox_at_offset(&server, 1)?;
+        verify_pool_bundle(&server, &manifest, member, &contents)?;
+        build_member_report(&manifest, member, &contents)
+    })();
+    persist_state(&report);
+    if let Ok(report) = &report {
+        if report.applied {
+            record_cloud_applied(report);
+        }
+    }
+    report
+}
+
+fn record_cloud_applied(report: &ApplyReport) {
+    let _ = webui_activity::record(
+        "cloud_keybox_applied",
+        &format!("{} {}", report.source, short_digest(&report.sha256)),
+    );
+}
+
+fn persist_state(result: &Result<ApplyReport>) {
+    match result {
+        Ok(report) if report.applied => write_state("applied", Some(report), None),
+        Ok(report) => write_state("unchanged", Some(report), None),
+        Err(error) => write_state("failed", None, Some(&format!("{error:#}"))),
+    }
+}
+
+fn apply_with_config(server: &ServerConfig, policy: RefreshPolicy) -> Result<ApplyReport> {
     let result = (|| -> Result<ApplyReport> {
         let manifest = fetch_manifest(server)?;
         if manifest.keybox.url.trim().is_empty() && manifest.keybox.sha256.trim().is_empty() {
             bail!("the server published no keybox yet");
         }
+        let expected = manifest.keybox.sha256.trim().to_ascii_lowercase();
+        if policy == RefreshPolicy::SkipIfInstalled
+            && !expected.is_empty()
+            && installed_keybox_digest().as_deref() == Some(expected.as_str())
+        {
+            return Ok(report_skipped(
+                &manifest.keybox.source,
+                &expected,
+                manifest.keybox.size,
+                &manifest.keybox.validity,
+                rotation_label(&manifest.keybox.rotation),
+                manifest.keybox.notice.clone(),
+            ));
+        }
         let contents = fetch_keybox(server, &manifest)?;
         verify_bundle(server, &manifest, &contents)?;
         build_report(&manifest, &contents)
     })();
-    match &result {
-        Ok(report) if report.applied => write_state("applied", Some(report), None),
-        Ok(report) => write_state("unchanged", Some(report), None),
-        Err(error) => write_state("failed", None, Some(&format!("{error:#}"))),
-    }
+    persist_state(&result);
     result
 }
 
-fn build_report(manifest: &Manifest, contents: &[u8]) -> Result<ApplyReport> {
-    let digest = sha256_hex(contents);
-    let rotation = if manifest.keybox.rotation.enabled {
+fn rotation_label(rotation: &KeyboxRotation) -> Option<String> {
+    if rotation.enabled {
         Some(format!(
             "{}/{}",
-            manifest.keybox.rotation.current_index + 1,
-            manifest.keybox.rotation.pool_size
+            rotation.current_index + 1,
+            rotation.pool_size
         ))
     } else {
         None
-    };
+    }
+}
 
-    let applied = if installed_keybox_digest().as_deref() == Some(digest.as_str()) {
+/// Report for a skip path: the installed keybox already matches what the cloud
+/// would deliver, so no download and no install happened.
+fn report_skipped(
+    source: &str,
+    digest: &str,
+    size: i64,
+    validity: &KeyboxValidity,
+    rotation: Option<String>,
+    notice: Vec<String>,
+) -> ApplyReport {
+    ApplyReport {
+        ok: true,
+        applied: false,
+        source: source.to_string(),
+        sha256: digest.to_string(),
+        size: size.max(0) as usize,
+        days_remaining: validity.days_remaining,
+        min_not_after: validity.min_not_after.clone(),
+        rotation,
+        note: "the installed keybox is already the newest one".to_string(),
+        notice,
+    }
+}
+
+fn build_report(manifest: &Manifest, contents: &[u8]) -> Result<ApplyReport> {
+    apply_install(
+        &manifest.keybox.source,
+        &sha256_hex(contents),
+        contents,
+        rotation_label(&manifest.keybox.rotation),
+        manifest.keybox.validity.days_remaining,
+        manifest.keybox.validity.min_not_after.clone(),
+        manifest.keybox.notice.clone(),
+    )
+}
+
+fn build_member_report(
+    manifest: &Manifest,
+    member: &RotationPoolMember,
+    contents: &[u8],
+) -> Result<ApplyReport> {
+    apply_install(
+        &member.source,
+        &sha256_hex(contents),
+        contents,
+        rotation_label(&manifest.keybox.rotation),
+        member.validity.days_remaining,
+        member.validity.min_not_after.clone(),
+        manifest.keybox.notice.clone(),
+    )
+}
+
+/// Verifies a keybox fetched with an `offset` request against the member entry
+/// the same manifest published. Reuses the exact digest / signature / validity
+/// checks of `verify_bundle` through a synthetic manifest view.
+fn verify_pool_bundle(
+    server: &ServerConfig,
+    manifest: &Manifest,
+    member: &RotationPoolMember,
+    contents: &[u8],
+) -> Result<()> {
+    let view = Manifest {
+        version: manifest.version.clone(),
+        version_code: manifest.version_code,
+        base_url: manifest.base_url.clone(),
+        keybox: ManifestKeybox {
+            url: manifest.keybox.url.clone(),
+            sha256: member.sha256.clone(),
+            size: member.size,
+            source: member.source.clone(),
+            signature: member.signature.clone(),
+            sign_public: manifest.keybox.sign_public.clone(),
+            validity: member.validity.clone(),
+            rotation: manifest.keybox.rotation.clone(),
+            notice: manifest.keybox.notice.clone(),
+        },
+    };
+    verify_bundle(server, &view, contents)
+}
+
+fn apply_install(
+    source: &str,
+    digest: &str,
+    contents: &[u8],
+    rotation: Option<String>,
+    days_remaining: Option<i64>,
+    min_not_after: Option<String>,
+    notice: Vec<String>,
+) -> Result<ApplyReport> {
+    let applied = if installed_keybox_digest().as_deref() == Some(digest) {
         false
     } else {
         keybox::install_keybox_xml(contents).context("failed to install the cloud keybox")?;
@@ -432,13 +663,14 @@ fn build_report(manifest: &Manifest, contents: &[u8]) -> Result<ApplyReport> {
     Ok(ApplyReport {
         ok: true,
         applied,
-        source: manifest.keybox.source.clone(),
-        sha256: digest,
+        source: source.to_string(),
+        sha256: digest.to_string(),
         size: contents.len(),
-        days_remaining: manifest.keybox.validity.days_remaining,
-        min_not_after: manifest.keybox.validity.min_not_after.clone(),
+        days_remaining,
+        min_not_after,
         rotation,
         note,
+        notice,
     })
 }
 
@@ -474,6 +706,9 @@ pub struct CloudStatus {
     pub rotation_pool_size: i64,
     pub rotation_current_index: i64,
     pub is_current: bool,
+    /// Cloud-delivered notices from the manifest, forwarded verbatim for the WebUI
+    /// to display in the dialog.
+    pub notice: Vec<String>,
 }
 
 impl CloudStatus {
@@ -511,6 +746,7 @@ impl CloudStatus {
             rotation_pool_size: 0,
             rotation_current_index: 0,
             is_current: false,
+            notice: Vec::new(),
         }
     }
 }
@@ -551,6 +787,7 @@ pub fn status_report() -> Result<CloudStatus> {
             status.rotation_pool_size = manifest.keybox.rotation.pool_size;
             status.rotation_current_index = manifest.keybox.rotation.current_index;
             status.is_current = !next.is_empty() && installed == next;
+            status.notice = manifest.keybox.notice.clone();
         }
         Err(error) => {
             status.cloud = "unreachable";
@@ -670,7 +907,7 @@ fn run_worker() {
             }
         };
         if server.enabled && server.auto_fetch && global::boot_completed() && due_now(&server) {
-            match apply_with_config(&server) {
+            match apply_with_config(&server, RefreshPolicy::SkipIfInstalled) {
                 Ok(report) if report.applied => log::info!(
                     "automatic cloud keybox applied: source={} sha256={}",
                     report.source,

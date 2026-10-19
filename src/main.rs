@@ -1098,6 +1098,36 @@ fn handle_webui_cloud_keybox_command() -> Option<Result<String, String>> {
                     .map_err(|error| format!("{error:#}")),
             )
         }
+        "--webui-check-cloud-keybox-update" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-check-cloud-keybox-update does not accept arguments".to_string(),
+                ));
+            }
+            prepare_android_storage();
+            Some(
+                remote_keybox::update_from_cloud()
+                    .and_then(|report| {
+                        serde_json::to_string(&report).context("failed to serialize the report")
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        "--webui-get-second-cloud-keybox" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-second-cloud-keybox does not accept arguments".to_string(),
+                ));
+            }
+            prepare_android_storage();
+            Some(
+                remote_keybox::second_from_cloud()
+                    .and_then(|report| {
+                        serde_json::to_string(&report).context("failed to serialize the report")
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
         "--webui-set-cloud-keybox-enabled" => Some(outcome(
             parse_webui_flag(args, "--webui-set-cloud-keybox-enabled")
                 .map_err(anyhow::Error::msg)

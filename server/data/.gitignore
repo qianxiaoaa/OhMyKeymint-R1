@@ -1,0 +1,4 @@
+# 私有数据目录：keybox.xml / manifest.json / revocation.json / pool/ 运行时生成，不入库。
+*
+!.gitignore
+!.gitkeep
