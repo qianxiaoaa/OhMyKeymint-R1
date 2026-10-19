@@ -32,7 +32,7 @@ function resolvedUrl(state: WallpaperState | null): string {
 
 function apply(): void {
   const root = document.documentElement
-  root.style.setProperty('--omk-wallpaper-url', `url("${assetUrl(store.state)}")`)
+  root.style.setProperty('--omk-wallpaper-url', `url("${resolvedUrl(store.state)}")`)
   root.dataset.wallpaper = store.state?.custom ? 'custom' : 'default'
 }
 

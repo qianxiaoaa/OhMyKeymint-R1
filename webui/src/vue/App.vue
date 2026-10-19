@@ -68,6 +68,7 @@ const soterOpen = ref(false)
 const soterHalOpen = ref(false)
 const pifOpen = ref(false)
 const cloudKeyboxOpen = ref(false)
+const cloudKeyboxBusy = ref(false)
 const keyboxOpen = ref(false)
 const selectedKeybox = ref<SelectedContents | null>(null)
 const keyboxBusy = ref(false)
@@ -520,12 +521,35 @@ function onTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': openTargets(); break
     case 'installKeybox': void chooseKeybox(); break
-    case 'cloudKeybox': cloudKeyboxOpen.value = true; break
+    case 'cloudKeybox': void fetchCloudKeybox(); break
     case 'syncSecurityPatch': void syncPatch(false); break
     case 'restoreSecurityPatch': void syncPatch(true); break
     case 'openSoterBeta': soterOpen.value = true; break
     case 'openSoterHal': soterHalOpen.value = true; break
     case 'spoofPif': pifOpen.value = true; break
+  }
+}
+
+async function fetchCloudKeybox(): Promise<void> {
+  if (cloudKeyboxBusy.value) return
+  cloudKeyboxBusy.value = true
+  notify(i18n.t('cloud_keybox_working'))
+  try {
+    const result = await cli.applyCloudKeybox()
+    if (result.applied) {
+      notify(i18n.t('cloud_keybox_success'))
+    } else {
+      notify(i18n.t('cloud_keybox_latest'))
+    }
+    // Cloud-delivered notices, e.g. free-module reminders, are shown as-is.
+    for (const line of result.notice) notify(line)
+    if (result.applied) await onCloudKeyboxChanged()
+  } catch (error) {
+    // The cli command surfaces a human-readable reason (e.g. the server is
+    // unreachable or the current Keybox is already the newest one).
+    notify(error instanceof Error ? error.message : String(error), true)
+  } finally {
+    cloudKeyboxBusy.value = false
   }
 }
 
@@ -696,6 +720,7 @@ watch(keyboxOpen, open => {
         <ToolsView
           v-show="pageIndex === 1"
           :security-patch-busy="securityPatchBusy"
+          :cloud-keybox-busy="cloudKeyboxBusy"
           @open-app-targets="onTool('openAppTargets')"
           @install-keybox="onTool('installKeybox')"
           @cloud-keybox="onTool('cloudKeybox')"
@@ -714,6 +739,7 @@ watch(keyboxOpen, open => {
           @overlay-close="onSettingsOverlayClose"
           @choose-wallpaper="chooseWallpaper"
           @reset-wallpaper="resetWallpaper"
+          @open-cloud-keybox="cloudKeyboxOpen = true"
         />
       </Transition>
     </main>

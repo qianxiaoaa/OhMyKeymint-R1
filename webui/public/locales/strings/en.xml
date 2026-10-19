@@ -227,6 +227,9 @@
     <string name="settings_wallpaper_custom_desc">A custom picture is installed</string>
     <string name="settings_wallpaper_reset">Restore the default wallpaper</string>
     <string name="settings_wallpaper_reset_desc">Remove the custom picture from this device</string>
+    <string name="settings_cloud_keybox">Cloud Keybox</string>
+    <string name="settings_cloud_keybox_config">Cloud Keybox configuration</string>
+    <string name="settings_cloud_keybox_config_desc">Server URL, signing key and refresh preferences</string>
     <string name="tools_soter_beta">Tencent Soter compatibility (Beta)</string>
     <string name="tools_soter_beta_desc">Experimental compatibility for Tencent SoterServer. Requires Zygisk Next.</string>
     <string name="soter_beta_warning">Beta software test only: uses a publicly known test key and fixed test CPU ID for dynamically signed key exports. Key state resets when Tencent SoterServer restarts. It provides no fingerprint, TEE or payment authentication and does not change KeyMint.</string>

@@ -24,6 +24,7 @@ type BusyPatch = 'sync' | 'restore' | null
 
 const props = defineProps<{
   securityPatchBusy: BusyPatch
+  cloudKeyboxBusy: boolean
 }>()
 
 const emit = defineEmits<{
@@ -78,7 +79,7 @@ const groups = [
         event: 'cloudKeybox' as const,
         icon: Import,
         title: tr('menu_cloud_keybox', 'Fetch Keybox from cloud'),
-        summary: tr('tools_cloud_keybox_desc', 'Pull a signed Keybox from your own server and pin the root of trust.'),
+        summary: tr('tools_cloud_keybox_desc', 'Fetch a signed Keybox from the cloud, verify it and replace the installed one at once.'),
       },
       {
         event: 'openSoterBeta' as const,
@@ -125,12 +126,14 @@ const groups = [
 function isBusy(event: ToolEvent): boolean {
   if (event === 'syncSecurityPatch') return props.securityPatchBusy !== null
   if (event === 'restoreSecurityPatch') return props.securityPatchBusy !== null
+  if (event === 'cloudKeybox') return props.cloudKeyboxBusy
   return false
 }
 
 function isActiveBusy(event: ToolEvent): boolean {
   return (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync')
     || (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore')
+    || (event === 'cloudKeybox' && props.cloudKeyboxBusy)
 }
 </script>
 

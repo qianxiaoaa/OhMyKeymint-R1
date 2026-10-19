@@ -122,6 +122,7 @@ const emit = defineEmits<{
   'overlay-close': []
   'choose-wallpaper': []
   'reset-wallpaper': []
+  'open-cloud-keybox': []
 }>()
 
 watch(languageSheetOpen, open => {
@@ -389,6 +390,26 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
               </template>
             </MiuixArrowPreference>
           </template>
+        </MiuixCard>
+      </section>
+
+      <section class="settings-section" aria-labelledby="cloud-title">
+        <MiuixSmallTitle
+          id="cloud-title"
+          :text="translate('settings_cloud_keybox', 'Cloud Keybox')"
+        />
+        <MiuixCard class="settings-card settings-card--single" press-feedback="none">
+          <div class="settings-dropdown">
+            <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Tune" :size="22" /></span>
+            <MiuixArrowPreference
+              :title="translate('settings_cloud_keybox_config', 'Cloud Keybox configuration')"
+              :summary="translate(
+                'settings_cloud_keybox_config_desc',
+                'Server URL, signing key and refresh preferences',
+              )"
+              @click="emit('open-cloud-keybox')"
+            />
+          </div>
         </MiuixCard>
       </section>
 

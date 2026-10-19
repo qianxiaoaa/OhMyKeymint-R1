@@ -227,6 +227,9 @@
     <string name="settings_wallpaper_custom_desc">已安装自定义壁纸</string>
     <string name="settings_wallpaper_reset">恢复默认壁纸</string>
     <string name="settings_wallpaper_reset_desc">删除本机的自定义壁纸</string>
+    <string name="settings_cloud_keybox">云端 Keybox</string>
+    <string name="settings_cloud_keybox_config">云端 Keybox 配置</string>
+    <string name="settings_cloud_keybox_config_desc">服务器地址、签名公钥与自动刷新偏好</string>
     <string name="tools_soter_beta">修复腾讯Soter Server (Beta)</string>
     <string name="tools_soter_beta_desc">腾讯 SoterServer 的实验性兼容功能，需要 Zygisk Next。</string>
     <string name="soter_beta_warning">仅限 Beta 软件测试：使用公开的测试密钥和固定测试 CPU ID，动态签署密钥导出数据。腾讯 SoterServer 重启后密钥状态会重置。不提供指纹、TEE 或支付认证，不影响 KeyMint。</string>
