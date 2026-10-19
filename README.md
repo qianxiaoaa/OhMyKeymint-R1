@@ -56,3 +56,4 @@ Copyright 2022, The Android Open Source Project
 其他第三方来源与许可见[第三方软件说明](docs/THIRD_PARTY.md)。
 ## 如愿意支持 1.88也是爱 
 <img width="1280" height="1280" alt="786affb3c334400a31134945dd5e6515" src="https://github.com/user-attachments/assets/9ac6bc4c-b4a8-492a-9b86-8b7a3417745e" />
+[反馈裙](https://qm.qq.com/q/tzUIb65oUU/)，
