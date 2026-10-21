@@ -514,10 +514,14 @@ pub fn refresh_from_mirrors() -> Result<ApplyReport> {
 
 /// WebUI status JSON: last outcome plus the installed keybox digest.
 pub fn status_json() -> Result<String> {
-    serde_json::to_string(&MirrorStatus::from_state(
-        &read_state(),
-        installed_keybox_digest().unwrap_or_default(),
-    ))
+    let status =
+        MirrorStatus::from_state(&read_state(), installed_keybox_digest().unwrap_or_default());
+    serde_json::to_string(&MirrorStatus {
+        last_source: crate::sanitize_status_text(&status.last_source),
+        last_status: crate::sanitize_status_text(&status.last_status),
+        last_error: crate::sanitize_status_text(&status.last_error),
+        ..status
+    })
     .context("failed to serialize the mirror keybox status")
 }
 

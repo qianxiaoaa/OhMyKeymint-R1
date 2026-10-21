@@ -1097,12 +1097,21 @@ fn handle_webui_rot_command() -> Option<Result<String, String>> {
 fn webui_cloud_status() -> Result<String, String> {
     let mirror = mirror_keybox::status_json().map_err(|error| format!("{error:#}"))?;
     let online = online_report::status_json().map_err(|error| format!("{error:#}"))?;
-    let mirror: serde_json::Value = serde_json::from_str(&mirror)
-        .map_err(|error| format!("failed to decode mirror status: {error}"))?;
-    let online: serde_json::Value = serde_json::from_str(&online)
-        .map_err(|error| format!("failed to decode online status: {error}"))?;
-    serde_json::to_string(&serde_json::json!({ "mirror": mirror, "online": online }))
-        .map_err(|error| format!("failed to serialize cloud status: {error}"))
+    Ok(format!("{{\"mirror\":{mirror},\"online\":{online}}}"))
+}
+
+/// Normalizes a persisted string so the WebUI status parser accepts it:
+/// control characters (including newlines) become spaces, runs of whitespace
+/// collapse, and the result is capped at the parser's length limit.
+pub(crate) fn sanitize_status_text(text: &str) -> String {
+    let collapsed = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.chars().take(512).collect()
 }
 
 fn handle_webui_cloud_command(
@@ -1657,5 +1666,25 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn sanitize_status_text_collapses_and_caps() {
+        let dirty = "  err one\ntwo\u{7f}   ".repeat(100);
+        let clean = sanitize_status_text(&dirty);
+        assert!(!clean.contains('\n'));
+        assert!(!clean.contains('\u{7f}'));
+        assert!(clean.starts_with("err one two"));
+        assert_eq!(clean.chars().count(), 512);
+    }
+
+    #[test]
+    fn webui_cloud_status_keeps_the_webui_key_order() {
+        let output = webui_cloud_status().unwrap();
+        assert!(output.starts_with("{\"mirror\":{\"installed_sha256\":"));
+        assert!(output.contains("\"online\":{\"module_id\":"));
+        let online_pos = output.find("\"online\":{").unwrap();
+        let mirror_last_error_pos = output.find("\"last_error\"").unwrap();
+        assert!(online_pos > mirror_last_error_pos);
     }
 }

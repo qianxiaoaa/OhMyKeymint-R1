@@ -320,8 +320,8 @@ pub fn status_json() -> Result<String> {
     serde_json::to_string(&OnlineStatus {
         module_id: state.module_id.clone(),
         last_report_unix: state.last_report_unix,
-        last_status: state.last_status.clone(),
-        last_error: state.last_error.clone(),
+        last_status: crate::sanitize_status_text(&state.last_status),
+        last_error: crate::sanitize_status_text(&state.last_error),
         interval_seconds: state.interval_seconds,
     })
     .context("failed to serialize the online report status")
