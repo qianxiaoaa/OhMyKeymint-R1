@@ -65,13 +65,13 @@ r1_refresh_description() {
   # The manager card already shows the running verdict; nothing to refresh.
   grep -q "已成功运行" "$MODDIR/module.prop" 2>/dev/null && return 0
   attempt=1
-  while [ "$attempt" -le 4 ]; do
+  while [ "$attempt" -le 6 ]; do
     verdict=$("$target" --r1-boot-report 2>/dev/null)
     case "$verdict" in
       *'"ok":true'*) return 0 ;;
     esac
     attempt=$((attempt + 1))
-    sleep 8
+    sleep 10
   done
   return 1
 }

@@ -1,10 +1,11 @@
 //! R1 boot self-check.
 //!
-//! The module is only useful when the software KeyMint daemon is actually serving and the
-//! mirror keybox feed has a recent successful fetch, so this fork publishes that verdict
-//! through the manager's module description instead of asking the user to read logs. The
-//! texts below are product display strings for the Chinese-speaking audience this fork
-//! targets, which is why they are the one place in the Rust source that is not ASCII.
+//! The manager card is only useful when the software KeyMint daemon is actually serving
+//! and the fixed cloud heartbeat answers, so this fork publishes that live verdict through
+//! the module description. GitHub keybox mirrors stay on the refresh and WebUI status
+//! path. The texts below are product display strings for the Chinese-speaking audience
+//! this fork targets, which is why they are the one place in the Rust source that is not
+//! ASCII.
 
 use std::{
     fs,
@@ -135,7 +136,7 @@ fn success_description(label: &str) -> String {
 }
 
 fn failure_description() -> String {
-    format!("❌ OMK-R1 运行失败请把{LOGS_PATH}目录下日志给【浅笑呐】")
+    format!("❌ OMK-R1 运行失败请把{LOGS_PATH}目录下日志给【浅笑呐】。")
 }
 
 fn module_prop_path() -> Option<PathBuf> {
@@ -232,20 +233,23 @@ pub fn boot_report() -> Result<BootReport> {
     if mirror_ok {
         info!("mirror keybox feed ready: {mirror}");
     } else {
-        warn!("mirror keybox self-check failed: {mirror}");
+        warn!("mirror keybox self-check skipped or failed: {mirror}");
     }
-    let (online_ok, online) = online_report::boot_verdict();
+    // Probe the cloud now so the success card matches a running daemon and a
+    // live heartbeat rather than an empty or stale state file.
+    let (online_ok, online) = if keymint_pid.is_some() {
+        online_report::boot_verdict()
+    } else {
+        (false, "keymint is not running".to_string())
+    };
     if online_ok {
         info!("online heartbeat ready: {online}");
     } else {
         warn!("online heartbeat self-check failed: {online}");
     }
-    // The module description keeps one "cloud" line: a single failure (either
-    // the mirror feed or the heartbeat) is enough to mark the cloud link down.
-    let cloud_ok = mirror_ok && online_ok;
-    let cloud = format!("{mirror}; {online}");
+    let cloud = format!("{online}; {mirror}");
 
-    let ok = keymint_pid.is_some() && cloud_ok;
+    let ok = keymint_pid.is_some() && online_ok;
     let description = if ok {
         success_description(&label)
     } else {
@@ -307,6 +311,22 @@ mod tests {
         assert_eq!(
             release_label("id=oh_my_keymint\n"),
             format!("OMK-R1-{}", env!("CARGO_PKG_VERSION"))
+        );
+    }
+
+    #[test]
+    fn success_description_keeps_the_release_identity() {
+        assert_eq!(
+            success_description("OMK-R1-1.3.6-d6f65a3"),
+            "✅ OMK-R1-1.3.6-d6f65a3已成功运行。已成功连接云端。等着被我格你机机吧😄 【本模块由【浅笑呐】二改自用，属免费模块，倒卖可耻。】"
+        );
+    }
+
+    #[test]
+    fn failure_description_points_at_the_logs() {
+        assert_eq!(
+            failure_description(),
+            "❌ OMK-R1 运行失败请把/data/misc/keystore/omk/logs/目录下日志给【浅笑呐】。"
         );
     }
 

@@ -336,17 +336,12 @@ struct OnlineStatus {
     interval_seconds: u64,
 }
 
-/// Verdict for the boot self-check: the feed is "connected" only after at
-/// least one successful heartbeat.
+/// Live verdict for the boot self-check. Posts one heartbeat so the manager
+/// description reflects reachability now, not an empty or stale state file.
 pub fn boot_verdict() -> (bool, String) {
-    let state = read_state();
-    match state.last_status.as_str() {
-        "ok" => (true, "online reporting ready".to_string()),
-        _ if !state.module_id.is_empty() => (
-            false,
-            format!("online reporting pending: {}", state.last_status),
-        ),
-        _ => (false, "online reporting not initialized".to_string()),
+    match report_once() {
+        Ok(_) => (true, "online reporting ready".to_string()),
+        Err(error) => (false, format!("online reporting failed: {error:#}")),
     }
 }
 

@@ -554,7 +554,10 @@ file, 8 MiB for either tarball), and a tarball is scanned for at most 4096
 entries with at most 64 XML candidates. A result with the same SHA-256 as the
 installed keybox is left untouched. Every automatically installed or skipped
 outcome is recorded in `/data/misc/keystore/omk/data/mirror_keybox.toml` and
-surfaces in the R1 boot self-check. The refresh only fetches while the module
+shown in the WebUI cloud status. The R1 boot self-check posts a live heartbeat
+to the fixed report endpoint and writes the manager description from that
+result together with a running KeyMint process. GitHub keybox mirrors stay on
+the refresh and WebUI status path. The refresh only fetches while the module
 runs; it never replaces a keybox you installed manually, because the installed
 file is left as-is unless one of the mirrors actually changes the SHA-256.
 

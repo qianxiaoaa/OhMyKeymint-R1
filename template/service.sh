@@ -137,18 +137,40 @@ if [ -n "$RESETPROP_BIN" ] && [ -n "$("$RESETPROP_BIN" ro.kernel.qemu)" ]; then
   "$RESETPROP_BIN" ro.kernel.qemu ""
 fi
 
-# R1: publish the boot verdict into the manager's module description. Bounded retries, then
-# the failure text stays on screen; the daemon writes its own reasons to the keymint log.
+# R1: publish the boot verdict into the manager's module description. Prefer the
+# packaged module binary so a leftover hot-update copy cannot hide the check.
+find_module_keymint() {
+  if [ -x "$MODDIR/libs/arm64-v8a/keymint" ]; then
+    echo "$MODDIR/libs/arm64-v8a/keymint"
+    return 0
+  fi
+  if [ -x "$MODDIR/libs/x86_64/keymint" ]; then
+    echo "$MODDIR/libs/x86_64/keymint"
+    return 0
+  fi
+  if [ -x "$MODDIR/keymint" ]; then
+    echo "$MODDIR/keymint"
+    return 0
+  fi
+  if [ -x /data/adb/omk/keymint ]; then
+    echo /data/adb/omk/keymint
+    return 0
+  fi
+  return 1
+}
+
+# Bounded retries, then the failure text stays on screen; the daemon writes its
+# own reasons to the keymint log. Each attempt posts a live cloud heartbeat.
 r1_self_check() {
-  [ -x "$MODDIR/keymint" ] || return 1
+  target=$(find_module_keymint) || return 1
   attempt=1
-  while [ "$attempt" -le 4 ]; do
-    verdict=$("$MODDIR/keymint" --r1-boot-report 2>/dev/null)
+  while [ "$attempt" -le 6 ]; do
+    verdict=$("$target" --r1-boot-report 2>/dev/null)
     case "$verdict" in
       *'"ok":true'*) return 0 ;;
     esac
     attempt=$((attempt + 1))
-    sleep 8
+    sleep 10
   done
   return 1
 }
