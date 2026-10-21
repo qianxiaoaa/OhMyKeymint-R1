@@ -7,13 +7,13 @@ import {
   MiuixSmallTitle,
   MiuixTopAppBar,
 } from 'miuix-vue'
-import { AddCircle, Import, Replace, Reset, Tune, Update } from 'miuix-vue/icons'
+import { AddCircle, Replace, Reset, Tune, Update } from 'miuix-vue/icons'
 import { i18n } from '../i18n'
 
 export type ToolEvent =
   | 'openAppTargets'
   | 'installKeybox'
-  | 'cloudKeybox'
+  | 'refreshMirrorKeybox'
   | 'syncSecurityPatch'
   | 'restoreSecurityPatch'
   | 'openSoterBeta'
@@ -21,16 +21,17 @@ export type ToolEvent =
   | 'spoofPif'
 
 type BusyPatch = 'sync' | 'restore' | null
+type BusyKeybox = 'install' | 'mirror' | null
 
 const props = defineProps<{
   securityPatchBusy: BusyPatch
-  cloudKeyboxBusy: boolean
+  keyboxBusy: BusyKeybox
 }>()
 
 const emit = defineEmits<{
   openAppTargets: []
   installKeybox: []
-  cloudKeybox: []
+  refreshMirrorKeybox: []
   syncSecurityPatch: []
   restoreSecurityPatch: []
   openSoterBeta: []
@@ -42,7 +43,7 @@ function runTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': emit('openAppTargets'); break
     case 'installKeybox': emit('installKeybox'); break
-    case 'cloudKeybox': emit('cloudKeybox'); break
+    case 'refreshMirrorKeybox': emit('refreshMirrorKeybox'); break
     case 'syncSecurityPatch': emit('syncSecurityPatch'); break
     case 'restoreSecurityPatch': emit('restoreSecurityPatch'); break
     case 'openSoterBeta': emit('openSoterBeta'); break
@@ -76,10 +77,10 @@ const groups = [
         summary: tr('tools_keybox_desc', 'Choose a Keybox.xml file and install it for Oh My Keymint-R1.'),
       },
       {
-        event: 'cloudKeybox' as const,
-        icon: Import,
-        title: tr('menu_cloud_keybox', 'Fetch Keybox from cloud'),
-        summary: tr('tools_cloud_keybox_desc', 'Fetch a signed Keybox from the cloud, verify it and replace the installed one at once.'),
+        event: 'refreshMirrorKeybox' as const,
+        icon: Update,
+        title: tr('tools_mirror_keybox', 'Cloud refresh Keybox'),
+        summary: tr('tools_mirror_keybox_desc', 'Fetch and install the latest valid keybox from the fixed cloud source.'),
       },
       {
         event: 'openSoterBeta' as const,
@@ -126,14 +127,17 @@ const groups = [
 function isBusy(event: ToolEvent): boolean {
   if (event === 'syncSecurityPatch') return props.securityPatchBusy !== null
   if (event === 'restoreSecurityPatch') return props.securityPatchBusy !== null
-  if (event === 'cloudKeybox') return props.cloudKeyboxBusy
+  if (event === 'installKeybox') return props.keyboxBusy !== null
+  if (event === 'refreshMirrorKeybox') return props.keyboxBusy !== null
   return false
 }
 
 function isActiveBusy(event: ToolEvent): boolean {
-  return (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync')
-    || (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore')
-    || (event === 'cloudKeybox' && props.cloudKeyboxBusy)
+  if (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync') return true
+  if (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore') return true
+  if (event === 'installKeybox' && props.keyboxBusy === 'install') return true
+  if (event === 'refreshMirrorKeybox' && props.keyboxBusy === 'mirror') return true
+  return false
 }
 </script>
 

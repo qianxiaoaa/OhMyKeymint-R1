@@ -1,10 +1,10 @@
 <?php
 /**
- * OhMyKeymint 下发计数（keybox / pif）。
+ * OhMyKeymint-R1 下发统计（PIF）。
  *
  * 计数写在 data_dir/counter.json，web 根之外，只能经 index.php?action=stats 读取。
- * keybox 由 index.php 在成功下发时自增；pif 由于是静态文件，由 count_pif.php
- * 解析 nginx 访问日志累积。两者共用本文件的读写逻辑，用 flock 保证并发安全。
+ * PIF 指纹是静态文件，由 index.php 在转发时自增（每份 .prop 下载 +1）。
+ * 在线设备数不由这里统计，见 lib/online.php。
  */
 
 declare(strict_types=1);
@@ -51,7 +51,7 @@ if (!function_exists('omk_counter_bump')) {
 }
 
 if (!function_exists('omk_counter_read')) {
-    /** @return array{keybox:int,pif:int} */
+    /** @return array{pif:int} */
     function omk_counter_read(array $cfg): array
     {
         $raw = @file_get_contents(omk_counter_path($cfg));
@@ -60,8 +60,7 @@ if (!function_exists('omk_counter_read')) {
             $data = [];
         }
         return [
-            'keybox' => (int)($data['keybox'] ?? 0),
-            'pif'    => (int)($data['pif'] ?? 0),
+            'pif' => (int)($data['pif'] ?? 0),
         ];
     }
 }

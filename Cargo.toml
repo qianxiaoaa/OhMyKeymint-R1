@@ -9,7 +9,6 @@ name = "keymint"
 path = "src/main.rs"
 
 [dependencies]
-syscalls = "0.8.1"
 kmr-derive = { path = "derive" }
 kmr-common = { path = "common" }
 kmr-crypto-boring = { path = "boringssl" }
@@ -17,7 +16,6 @@ kmr-ta = { path = "ta" }
 kmr-wire = { path = "wire" }
 libc = "0.2.189"
 prost = "0.14.4"
-prost-types = "0.14.4"
 hex = "0.4.3"
 log4rs = { version = "1.4.0", default-features = false, features = ["console_appender"] }
 log = "0.4.34"
@@ -40,7 +38,6 @@ rand = "0.10.2"
 der = "0.8.1"
 toml = "1.1.4"
 regex = "1.13.1"
-hotwatch = "0.5.0"
 base64 = "0.23.1"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 ring = "0.17.14"
@@ -49,6 +46,7 @@ pif-common = { path = "pif-common" }
 android_logger = "0.15.1"
 multi_log = "0.1.2"
 zip = { version = "8.2.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+flate2 = { version = "1.1.10", default-features = false, features = ["zlib-rs"] }
 
 [profile.dev]
 incremental = true

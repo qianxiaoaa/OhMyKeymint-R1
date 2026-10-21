@@ -155,11 +155,11 @@ surface and does not enable floating navigation by itself.
 
 The Settings page also provides a page background wallpaper. The packaged
 picture ships inside the module webroot, so the background never needs a network
-fetch. **Background wallpaper** opens the system picker for a JPG, PNG or WebP
-image of at most 10 MiB; on a host without a file picker it falls back to the
-built-in shared-storage browser, which copies the chosen file on the device
-instead of streaming it through the WebUI. The image is validated by its file
-header, kept at `/data/misc/keystore/omk/data/wallpaper.bin`, and published into
+fetch. **Background wallpaper** opens the built-in shared-storage browser for a
+JPG, PNG or WebP image of at most 10 MiB and copies the chosen file on the
+device instead of streaming it through the WebUI. Open-with-another-app still
+uses the system picker when a real path is unavailable. The image is validated
+by its file header, kept at `/data/misc/keystore/omk/data/wallpaper.bin`, and published into
 the webroot under a module-chosen `assets/wallpaper/custom.<ext>` name, so it
 survives a module update and is restored at the next start. Cards, sheets,
 dialogs and dropdowns become translucent glass over the picture, and a dimming
@@ -537,6 +537,56 @@ The reload preserves ordinary application signing keys, including passkey
 credentials. Only dedicated `ATTEST_KEY` entries tied to the previous keybox
 are retired.
 
+### Automatic mirror refresh
+
+Once per day after boot, OMK tries the three community GitHub mirrors below in
+priority order and installs the first archive that passes the complete
+`KeyBox` validation, exactly as if it had been installed through **Change
+Keybox**:
+
+1. `Yurii0307/yurikey` — a single file served from `raw.githubusercontent.com`.
+2. `rahmatsobrian/keybox-collection` — a source tarball of plain UTF-8 XML.
+3. `shall0e/KeyboxHub` — a source tarball of UTF-16LE XML.
+
+Only `https` URLs on `raw.githubusercontent.com`, `codeload.github.com`, or
+`github.com` are accepted. Each download is bounded (64 KiB for the single
+file, 8 MiB for either tarball), and a tarball is scanned for at most 4096
+entries with at most 64 XML candidates. A result with the same SHA-256 as the
+installed keybox is left untouched. Every automatically installed or skipped
+outcome is recorded in `/data/misc/keystore/omk/data/mirror_keybox.toml` and
+surfaces in the R1 boot self-check. The refresh only fetches while the module
+runs; it never replaces a keybox you installed manually, because the installed
+file is left as-is unless one of the mirrors actually changes the SHA-256.
+
+The same fixed mirrors can be pulled on demand from **Tools → Cloud refresh
+Keybox**. The command runs the identical fetch-and-validate path
+(`--webui-refresh-mirror-keybox`), replaces the installed keybox when a
+mirror actually changed it, and reports the outcome (`applied`/`unchanged`/
+`failed`) back into the same state file.
+
+### Online heartbeat
+
+Once the system has booted, OMK reports a heartbeat to the fixed server
+endpoint `https://omk.5ijxa.com/api/omk/index.php?action=report` every 30
+minutes. The payload carries a per-install `module_id` (`omk-` plus 32
+lowercase hex digits, generated once and stored under
+`/data/misc/keystore/omk/data/online_report.toml`) and the SHA-256 of the
+currently installed keybox. The server keeps the device online for six hours
+since the last heartbeat, which is what the homepage device count shows.
+
+The endpoint host is fixed at compile time and is the only host the heartbeat
+may reach; the request is `https`-only with a 20-second timeout, and a server-
+echoed interval outside 300..86400 seconds is clamped. The server stores only
+the SHA-256 of the `module_id` as a dedup key, never the id. Failures are
+logged and retried on the next 30-minute tick, and the last outcome is
+recorded in the same state file.
+
+The **Home** tab shows a **Cloud status** card with the last mirror fetch
+(time, source, outcome, error) and the last heartbeat (module id, report time,
+interval). Its **Refresh** button re-reads both state files through
+`--webui-get-cloud-status` without triggering a new mirror fetch or a new
+heartbeat.
+
 ## `config.toml`
 
 ### Complete annotated example
@@ -549,8 +599,8 @@ examples; keep the values from the active file unless you intend to change the
 reported identity.
 
 ```toml
-# Configuration format. Keep this at 2.
-version = 2
+# Configuration format. Keep this at 1.
+version = 1
 
 [main]
 # The supported service connection. Keep this value unchanged.

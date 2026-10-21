@@ -17,11 +17,10 @@ const MAX_PIF_CATALOG_BYTES = 64 * 1024
 const MAX_PIF_STATE_BYTES = 2 * 1024
 const MAX_SOTER_HAL_JSON_BYTES = 16 * 1024
 const MAX_DIAGNOSTICS_JSON_BYTES = 8 * 1024
+const MAX_CLOUD_JSON_BYTES = 8 * 1024
 const MAX_KEYBOX_INSPECTOR_JSON_BYTES = 32 * 1024
 const MAX_APP_PATCH_LEVELS_JSON_BYTES = 64 * 1024
-const MAX_CLOUD_KEYBOX_JSON_BYTES = 16 * 1024
 const MAX_ROOT_OF_TRUST_JSON_BYTES = 4 * 1024
-const MAX_CLOUD_SETTING_BYTES = 512
 const MAX_WALLPAPER_JSON_BYTES = 4 * 1024
 const WALLPAPER_CHUNK_BYTES = 48 * 1024
 const WALLPAPER_TOKEN_RE = /^[0-9a-f]{32}$/
@@ -43,6 +42,39 @@ export interface WallpaperState {
   bytes: number
   updated_at: number
   max_bytes: number
+}
+
+/** Cloud connection state: the mirror keybox feed and the online heartbeat. */
+export interface MirrorStatus {
+  installed_sha256: string
+  installed_source: string
+  last_fetch_unix: number
+  last_sha256: string
+  last_source: string
+  last_status: string
+  last_error: string
+}
+
+export interface OnlineReportStatus {
+  module_id: string
+  last_report_unix: number
+  last_status: string
+  last_error: string
+  interval_seconds: number
+}
+
+export interface CloudStatus {
+  mirror: MirrorStatus
+  online: OnlineReportStatus
+}
+
+export interface MirrorRefreshReport {
+  ok: boolean
+  applied: boolean
+  source: string
+  sha256: string
+  size: number
+  note: string
 }
 
 export interface PifDevice {
@@ -214,67 +246,6 @@ export interface RootOfTrustStatus {
   note: string
 }
 
-// Field order mirrors the Rust serializer.
-export interface CloudKeyboxStatus {
-  enabled: boolean
-  base_url: string
-  auto_fetch: boolean
-  fetch_interval_hours: number
-  verify_signature: boolean
-  require_valid: boolean
-  min_days_remaining: number
-  trusted_pubkey: 'builtin' | 'configured'
-  last_fetch_unix: number
-  last_sha256: string
-  last_source: string
-  last_status: string
-  last_error: string
-  installed_sha256: string
-  cloud: 'disabled' | 'connected' | 'unreachable'
-  cloud_error: string
-  server_version: string
-  next_source: string
-  next_sha256: string
-  next_size: number
-  next_level: string
-  next_ok: boolean
-  next_days_remaining: number
-  next_min_not_after: string
-  rotation_enabled: boolean
-  rotation_pool_size: number
-  rotation_current_index: number
-  is_current: boolean
-  notice: string[]
-  revocation: CloudRevocation
-}
-
-// Field order mirrors the Rust serializer.
-export interface CloudRevocation {
-  present: boolean
-  permanent_count: number
-  pending_count: number
-  report_threshold: number
-  report_unverified_threshold: number
-  checked: number
-  fresh: boolean
-  source: string
-  fetched_at: number
-}
-
-// Field order mirrors the Rust serializer.
-export interface CloudKeyboxApplyResult {
-  ok: boolean
-  applied: boolean
-  source: string
-  sha256: string
-  size: number
-  days_remaining: number | null
-  min_not_after: string | null
-  rotation: string | null
-  note: string
-  notice: string[]
-}
-
 function parseCanonicalJson(output: string, description: string): unknown {
   let parsed: unknown
   try {
@@ -307,14 +278,6 @@ function isSafeText(value: unknown, maxLength: number): value is string {
 
 function isPifProduct(value: unknown): value is string {
   return isSafeText(value, MAX_PIF_PRODUCT_LENGTH) && PIF_PRODUCT_RE.test(value)
-}
-
-// Cloud-delivered notices: each line is bounded, and the list is bounded so a
-// misbehaving server cannot push unbounded memory or UI content.
-function isNoticeList(value: unknown): value is string[] {
-  return Array.isArray(value)
-    && value.length <= 16
-    && value.every(line => isSafeText(line, 512))
 }
 
 function parsePifDevice(value: unknown): PifDevice {
@@ -533,6 +496,87 @@ function parseRotDiagnostic(value: unknown): RotDiagnostic {
   return { status: value.status, mode: value.mode, pinned: value.pinned, drift: value.drift }
 }
 
+function parseCloudStatus(output: string): CloudStatus {
+  const parsed = parseCanonicalJson(output, 'cloud status')
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, ['mirror', 'online'])
+      || !isRecord(parsed.mirror)
+      || !hasOnlyKeys(parsed.mirror, [
+        'installed_sha256', 'installed_source', 'last_fetch_unix', 'last_sha256',
+        'last_source', 'last_status', 'last_error',
+      ])
+      || !isHexDigestOrEmpty(parsed.mirror.installed_sha256)
+      || !isSafeTextOrEmpty(parsed.mirror.installed_source, 32)
+      || typeof parsed.mirror.last_fetch_unix !== 'number'
+      || !Number.isSafeInteger(parsed.mirror.last_fetch_unix)
+      || parsed.mirror.last_fetch_unix < 0
+      || !isHexDigestOrEmpty(parsed.mirror.last_sha256)
+      || !isSafeTextOrEmpty(parsed.mirror.last_source, 32)
+      || !isSafeTextOrEmpty(parsed.mirror.last_status, 32)
+      || !isSafeTextOrEmpty(parsed.mirror.last_error, 512)
+      || !isRecord(parsed.online)
+      || !hasOnlyKeys(parsed.online, [
+        'module_id', 'last_report_unix', 'last_status', 'last_error', 'interval_seconds',
+      ])
+      || !isSafeTextOrEmpty(parsed.online.module_id, 64)
+      || typeof parsed.online.last_report_unix !== 'number'
+      || !Number.isSafeInteger(parsed.online.last_report_unix)
+      || parsed.online.last_report_unix < 0
+      || !isSafeTextOrEmpty(parsed.online.last_status, 32)
+      || !isSafeTextOrEmpty(parsed.online.last_error, 512)
+      || typeof parsed.online.interval_seconds !== 'number'
+      || !Number.isSafeInteger(parsed.online.interval_seconds)
+      || parsed.online.interval_seconds < 0) {
+    throw new Error('OMK returned an invalid cloud status')
+  }
+  return {
+    mirror: {
+      installed_sha256: parsed.mirror.installed_sha256 as string,
+      installed_source: parsed.mirror.installed_source as string,
+      last_fetch_unix: parsed.mirror.last_fetch_unix as number,
+      last_sha256: parsed.mirror.last_sha256 as string,
+      last_source: parsed.mirror.last_source as string,
+      last_status: parsed.mirror.last_status as string,
+      last_error: parsed.mirror.last_error as string,
+    },
+    online: {
+      module_id: parsed.online.module_id as string,
+      last_report_unix: parsed.online.last_report_unix as number,
+      last_status: parsed.online.last_status as string,
+      last_error: parsed.online.last_error as string,
+      interval_seconds: parsed.online.interval_seconds as number,
+    },
+  }
+}
+
+function parseMirrorRefreshReport(output: string): MirrorRefreshReport {
+  const parsed = parseCanonicalJson(output, 'mirror refresh report')
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, ['ok', 'applied', 'source', 'sha256', 'size', 'note'])
+      || typeof parsed.ok !== 'boolean'
+      || typeof parsed.applied !== 'boolean'
+      || !isSafeTextOrEmpty(parsed.source, 32)
+      || !isHexDigestOrEmpty(parsed.sha256)
+      || typeof parsed.size !== 'number'
+      || !Number.isSafeInteger(parsed.size)
+      || parsed.size < 0
+      || !isSafeTextOrEmpty(parsed.note, 512)) {
+    throw new Error('OMK returned an invalid mirror refresh report')
+  }
+  return {
+    ok: parsed.ok,
+    applied: parsed.applied,
+    source: parsed.source as string,
+    sha256: parsed.sha256 as string,
+    size: parsed.size as number,
+    note: parsed.note as string,
+  }
+}
+
+function isHexDigestOrEmpty(value: unknown): boolean {
+  return value === '' || isHexDigest(value, 64)
+}
+
 function isHexDigest(value: unknown, length: number): value is string {
   return typeof value === 'string'
     && value.length === length
@@ -575,105 +619,6 @@ function parseRootOfTrust(output: string, description: string): RootOfTrustStatu
     restart_required: parsed.restart_required,
     note: parsed.note,
   }
-}
-
-function parseCloudKeyboxStatus(output: string): CloudKeyboxStatus {
-  const parsed = parseCanonicalJson(output, 'cloud Keybox status')
-  const nonNegative = (value: unknown) => typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value >= 0
-  if (!isRecord(parsed)
-      || !hasOnlyKeys(parsed, [
-        'enabled', 'base_url', 'auto_fetch', 'fetch_interval_hours', 'verify_signature',
-        'require_valid', 'min_days_remaining', 'trusted_pubkey', 'last_fetch_unix', 'last_sha256',
-        'last_source', 'last_status', 'last_error', 'installed_sha256', 'cloud', 'cloud_error',
-        'server_version', 'next_source', 'next_sha256', 'next_size', 'next_level', 'next_ok',
-        'next_days_remaining', 'next_min_not_after', 'rotation_enabled', 'rotation_pool_size',
-        'rotation_current_index', 'is_current', 'notice',
-      ])
-      || typeof parsed.enabled !== 'boolean'
-      || !isSafeTextOrEmpty(parsed.base_url, 512)
-      || !/^https:\/\/[^\s"]+$/.test(parsed.base_url as string)
-      || typeof parsed.auto_fetch !== 'boolean'
-      || (typeof parsed.fetch_interval_hours !== 'number'
-        || !Number.isSafeInteger(parsed.fetch_interval_hours)
-        || parsed.fetch_interval_hours < 1
-        || parsed.fetch_interval_hours > 744)
-      || typeof parsed.verify_signature !== 'boolean'
-      || typeof parsed.require_valid !== 'boolean'
-      || !nonNegative(parsed.min_days_remaining)
-      || (parsed.trusted_pubkey !== 'builtin' && parsed.trusted_pubkey !== 'configured')
-      || !nonNegative(parsed.last_fetch_unix)
-      || !(isHexDigest(parsed.last_sha256, 64) || parsed.last_sha256 === '')
-      || !isSafeTextOrEmpty(parsed.last_source, 256)
-      || !isSafeTextOrEmpty(parsed.last_status, 32)
-      || typeof parsed.last_error !== 'string'
-      || parsed.last_error.length > 1024
-      || /[\u0000-\u001f\u007f]/.test(parsed.last_error)
-      || !(isHexDigest(parsed.installed_sha256, 64) || parsed.installed_sha256 === '')
-      || (parsed.cloud !== 'disabled' && parsed.cloud !== 'connected' && parsed.cloud !== 'unreachable')
-      || typeof parsed.cloud_error !== 'string'
-      || parsed.cloud_error.length > 1024
-      || /[\u0000-\u001f\u007f]/.test(parsed.cloud_error)
-      || !isSafeTextOrEmpty(parsed.server_version, 64)
-      || !isSafeTextOrEmpty(parsed.next_source, 256)
-      || (!isHexDigest(parsed.next_sha256, 64) && parsed.next_sha256 !== '')
-      || !nonNegative(parsed.next_size)
-      || !isSafeTextOrEmpty(parsed.next_level, 32)
-      || typeof parsed.next_ok !== 'boolean'
-      || typeof parsed.next_days_remaining !== 'number'
-      || !Number.isSafeInteger(parsed.next_days_remaining)
-      || parsed.next_days_remaining < -1
-      || !isSafeTextOrEmpty(parsed.next_min_not_after, 64)
-      || typeof parsed.rotation_enabled !== 'boolean'
-      || !nonNegative(parsed.rotation_pool_size)
-      || !nonNegative(parsed.rotation_current_index)
-      || typeof parsed.is_current !== 'boolean'
-      || !isNoticeList(parsed.notice)
-      || !isCloudRevocation(parsed.revocation)) {
-    throw new Error('OMK returned an invalid cloud Keybox status')
-  }
-  return parsed as unknown as CloudKeyboxStatus
-}
-
-function isCloudRevocation(value: unknown): value is CloudRevocation {
-  if (!isRecord(value)) return false
-  const nonNegative = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0
-  return typeof value.present === 'boolean'
-    && nonNegative(value.permanent_count)
-    && nonNegative(value.pending_count)
-    && nonNegative(value.report_threshold)
-    && nonNegative(value.report_unverified_threshold)
-    && nonNegative(value.checked)
-    && typeof value.fresh === 'boolean'
-    && isSafeTextOrEmpty(value.source, 256)
-    && nonNegative(value.fetched_at)
-}
-
-function parseCloudKeyboxApply(output: string): CloudKeyboxApplyResult {
-  const parsed = parseCanonicalJson(output, 'cloud Keybox result')
-  if (!isRecord(parsed)
-      || !hasOnlyKeys(parsed, [
-'ok', 'applied', 'source', 'sha256', 'size', 'days_remaining', 'min_not_after',
-         'rotation', 'note', 'notice',
-       ])
-      || typeof parsed.ok !== 'boolean'
-      || typeof parsed.applied !== 'boolean'
-      || !isSafeTextOrEmpty(parsed.source, 256)
-      || !isHexDigest(parsed.sha256, 64)
-      || typeof parsed.size !== 'number'
-      || !Number.isSafeInteger(parsed.size)
-      || parsed.size < 1
-      || parsed.size > MAX_KEYBOX_XML_BYTES
-      || (parsed.days_remaining !== null
-        && (typeof parsed.days_remaining !== 'number' || !Number.isSafeInteger(parsed.days_remaining)))
-      || (parsed.min_not_after !== null && !isSafeText(parsed.min_not_after, 64))
-      || (parsed.rotation !== null && !isSafeText(parsed.rotation, 32))
-      || !isSafeText(parsed.note, 256)
-      || !isNoticeList(parsed.notice)) {
-    throw new Error('OMK returned an invalid cloud Keybox result')
-  }
-  return parsed as unknown as CloudKeyboxApplyResult
 }
 
 function parseWallpaperState(output: string, description: string): WallpaperState {
@@ -845,6 +790,22 @@ export class Cli {
     return parseDiagnostics(output)
   }
 
+  async getCloudStatus(): Promise<CloudStatus> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-get-cloud-status'], MAX_CLOUD_JSON_BYTES)
+    return parseCloudStatus(output)
+  }
+
+  async refreshMirrorKeybox(): Promise<MirrorRefreshReport> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-refresh-mirror-keybox'],
+      MAX_CLOUD_JSON_BYTES,
+    )
+    return parseMirrorRefreshReport(output)
+  }
+
   async checkKeyboxRevocation(): Promise<KeyboxRevocationStatus> {
     const { keymint } = await this.#getHelperPaths()
     const output = await this.#run(keymint, ['--webui-check-keybox-revocation'], 256)
@@ -929,9 +890,11 @@ export class Cli {
   async installWallpaperFromStorage(path: string): Promise<WallpaperState> {
     const source = validateWallpaperStoragePath(path)
     const { keymint } = await this.#getHelperPaths()
+    // KernelSU runs spawn arguments through a shell, so the storage path
+    // travels as one base64 argument instead of a raw pathname.
     const output = await this.#run(
       keymint,
-      ['--webui-install-wallpaper', source],
+      ['--webui-install-wallpaper-base64', encodeBase64Utf8(source)],
       MAX_WALLPAPER_JSON_BYTES,
     )
     return parseWallpaperState(output, 'wallpaper install result')
@@ -1132,88 +1095,6 @@ export class Cli {
     return state
   }
 
-  async getCloudKeybox(): Promise<CloudKeyboxStatus> {
-    const { keymint } = await this.#getHelperPaths()
-    const output = await this.#run(
-      keymint,
-      ['--webui-get-cloud-keybox'],
-      MAX_CLOUD_KEYBOX_JSON_BYTES,
-    )
-    return parseCloudKeyboxStatus(output)
-  }
-
-  async applyCloudKeybox(): Promise<CloudKeyboxApplyResult> {
-    const { keymint } = await this.#getHelperPaths()
-    const output = await this.#run(
-      keymint,
-      ['--webui-apply-cloud-keybox'],
-      MAX_CLOUD_KEYBOX_JSON_BYTES,
-    )
-    const result = parseCloudKeyboxApply(output)
-    if (!result.ok) throw new Error(result.note)
-    return result
-  }
-
-  async checkCloudKeyboxUpdate(): Promise<CloudKeyboxApplyResult> {
-    const { keymint } = await this.#getHelperPaths()
-    const output = await this.#run(
-      keymint,
-      ['--webui-check-cloud-keybox-update'],
-      MAX_CLOUD_KEYBOX_JSON_BYTES,
-    )
-    const result = parseCloudKeyboxApply(output)
-    if (!result.ok) throw new Error(result.note)
-    return result
-  }
-
-  async getSecondCloudKeybox(): Promise<CloudKeyboxApplyResult> {
-    const { keymint } = await this.#getHelperPaths()
-    const output = await this.#run(
-      keymint,
-      ['--webui-get-second-cloud-keybox'],
-      MAX_CLOUD_KEYBOX_JSON_BYTES,
-    )
-    const result = parseCloudKeyboxApply(output)
-    if (!result.ok) throw new Error(result.note)
-    return result
-  }
-
-  async #setCloudKeyboxFlag(flag: string, enabled: boolean): Promise<void> {
-    const { keymint } = await this.#getHelperPaths()
-    const output = await this.#run(keymint, [flag, enabled ? '1' : '0'], 256)
-    if (output !== 'ok') throw new Error(`OMK returned an unexpected ${flag} result`)
-  }
-
-  async setCloudKeyboxEnabled(enabled: boolean): Promise<void> {
-    await this.#setCloudKeyboxFlag('--webui-set-cloud-keybox-enabled', enabled)
-  }
-
-  async setCloudKeyboxAuto(enabled: boolean): Promise<void> {
-    await this.#setCloudKeyboxFlag('--webui-set-cloud-keybox-auto', enabled)
-  }
-
-  async setCloudKeyboxVerify(enabled: boolean): Promise<void> {
-    await this.#setCloudKeyboxFlag('--webui-set-cloud-keybox-verify', enabled)
-  }
-
-  async #setCloudKeyboxText(flag: string, value: string): Promise<void> {
-    if (new TextEncoder().encode(value).byteLength > MAX_CLOUD_SETTING_BYTES) {
-      throw new Error('The cloud Keybox setting exceeds the byte limit')
-    }
-    const { keymint } = await this.#getHelperPaths()
-    // KernelSU runs spawn arguments through a shell, so free-form text travels base64 encoded.
-    const output = await this.#run(keymint, [flag, encodeBase64Utf8(value)], 256)
-    if (output !== 'ok') throw new Error(`OMK returned an unexpected ${flag} result`)
-  }
-
-  async setCloudKeyboxBaseUrl(value: string): Promise<void> {
-    await this.#setCloudKeyboxText('--webui-set-cloud-keybox-url-base64', value.trim())
-  }
-
-  async setCloudKeyboxPubkey(value: string): Promise<void> {
-    await this.#setCloudKeyboxText('--webui-set-cloud-keybox-pubkey-base64', value.trim())
-  }
-
   async getRootOfTrust(): Promise<RootOfTrustStatus> {
     const { keymint } = await this.#getHelperPaths()
     const output = await this.#run(keymint, ['--webui-get-rot-status'], MAX_ROOT_OF_TRUST_JSON_BYTES)
@@ -1266,7 +1147,7 @@ export class Cli {
       throw new Error('Unsupported Android ABI: OMK provides arm64-v8a and x86_64 binaries')
     }
 
-    const roots = [HOT_UPDATE_ROOT, `${MODULE_ROOT}/libs/${abi}`]
+    const roots = [`${MODULE_ROOT}/libs/${abi}`, HOT_UPDATE_ROOT]
     for (const root of roots) {
       const inject = `${root}/inject`
       const keymint = `${root}/keymint`

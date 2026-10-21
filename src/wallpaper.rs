@@ -303,10 +303,14 @@ pub fn begin_stage() -> Result<String> {
     remove_stale_stages();
     let token = random_token()?;
     let path = stage_path(&token)?;
-    File::create(&path)
-        .with_context(|| format!("failed to create {}", path.display()))?
-        .set_permissions(fs::Permissions::from_mode(0o600))?;
+    File::create(&path).with_context(|| format!("failed to create {}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("failed to protect {}", path.display()))?;
     Ok(token)
+}
+
+fn is_trusted_stage_owner(uid: u32) -> bool {
+    uid == 0 || uid == KEYSTORE_UID
 }
 
 pub fn append_stage(token: &str, payload: &str) -> Result<()> {
@@ -320,7 +324,7 @@ pub fn append_stage(token: &str, payload: &str) -> Result<()> {
 
     let metadata = fs::symlink_metadata(&path)
         .with_context(|| format!("failed to inspect {}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.uid() != 0 {
+    if !metadata.file_type().is_file() || !is_trusted_stage_owner(metadata.uid()) {
         bail!("the wallpaper upload session is not usable");
     }
     if metadata.len() as usize + decoded.len() > MAX_WALLPAPER_BYTES as usize {
@@ -443,6 +447,14 @@ mod tests {
         }
         assert!(stage_path("../escape").is_err());
         assert!(stage_path(&"f".repeat(32)).is_ok());
+    }
+
+    #[test]
+    fn stage_owner_accepts_root_and_keystore() {
+        assert!(is_trusted_stage_owner(0));
+        assert!(is_trusted_stage_owner(KEYSTORE_UID));
+        assert!(!is_trusted_stage_owner(KEYSTORE_UID.wrapping_add(1)));
+        assert!(!is_trusted_stage_owner(2000));
     }
 
     #[test]

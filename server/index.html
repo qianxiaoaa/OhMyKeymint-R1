@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <title>OhMyKeymint-R1</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", Roboto, sans-serif;
+      background: radial-gradient(1200px 800px at 50% -10%, #0d1f3c, #070b18 65%);
+      color: #e8ecf4;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 24px;
+    }
+    .title {
+      font-size: 42px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      background: linear-gradient(90deg, #7dd3fc, #a5b4fc 55%, #f0abfc);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .sub {
+      margin-top: 14px;
+      font-size: 15px;
+      color: #8aa0bd;
+    }
+    .stats {
+      margin-top: 36px;
+      font-size: 20px;
+      font-weight: 500;
+      color: #dbeafe;
+    }
+    .stats b {
+      font-size: 30px;
+      margin: 0 4px;
+      background: linear-gradient(90deg, #7dd3fc, #a5b4fc);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .meta {
+      margin-top: 22px;
+      font-size: 12px;
+      color: #5b6f8f;
+    }
+  </style>
+</head>
+<body>
+  <h1 class="title">OhMyKeymint-R1</h1>
+  <p class="sub">Android KeyMint 注入框架 · 云端仅提供 PIF 指纹下发</p>
+  <p class="stats">OhMyKeymint-R1已在<b id="omk-devices">0</b>台设备上正常运行</p>
+  <p class="meta" id="omk-meta">统计更新中…</p>
+  <script src="scripts/app/stats.js" defer></script>
+</body>
+</html>

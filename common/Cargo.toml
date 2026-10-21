@@ -23,7 +23,6 @@ log = "0.4.33"
 log4rs = { version = "1.4.0", default-features = false, features = ["console_appender"] }
 pkcs1 = { version = "0.7.5", features = ["alloc"] }
 pkcs8 = "0.11.0"
-rand = "0.10.2"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
 rsproperties = { version = "0.6.0", features = ["builder"] }
 sec1 = { version = "0.8.1", features = ["alloc", "der"] }

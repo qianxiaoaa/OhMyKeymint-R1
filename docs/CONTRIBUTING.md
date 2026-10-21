@@ -121,7 +121,7 @@ python scripts/setup_cargo_config.py --ndk-root <ANDROID_NDK_ROOT> --force
 python build.py --debug
 ```
 
-Release packages use the identity order `OhMyKeymint-R1-<version>-<version code>-<short commit hash>-release.zip` for the default arm64 build, where the version code is `OMK_VERSION_CODE` (default `100`). The packaged `module.prop` shows the same identity in parentheses on its `version` line, and its `name` line, `Oh My Keymint-R1-<version>-<7-character commit hash>`, is what the installer and the WebUI home title display. A `-dirty` suffix is included in the archive name and the `version` line when the source worktree has uncommitted changes.
+Release packages use the identity order `OhMyKeymint-R1-<version>-<version code>-<short commit hash>-release.zip` for the default arm64 build, where the version code is `OMK_VERSION_CODE` (default `105`). The packaged `module.prop` shows the same identity in parentheses on its `version` line, and its `name` line, `Oh My Keymint-R1-<version>-<7-character commit hash>`, is what the installer and the WebUI home title display. A `-dirty` suffix is included in the archive name and the `version` line when the source worktree has uncommitted changes.
 
 Module archives use standard ZIP Deflate at compression level 9 and retain
 per-file SHA-256 verification. Native release binaries keep speed-oriented

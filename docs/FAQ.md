@@ -160,7 +160,7 @@ picker can use another installed storage app such as MT Manager and requests
 all MIME types because providers may label XML as `text/plain` or
 `application/octet-stream`; the WebUI still requires an `.xml` filename. If the
 system picker cannot be opened, the WebUI falls back to its shared-storage
-browser. The same picker and browser also install a JPG, PNG or WebP page
+browser. The same browser also installs a JPG, PNG or WebP page
 background of at most 10 MiB; the helper copies that picture on the device,
 validates its file header, and keeps it at
 `/data/misc/keystore/omk/data/wallpaper.bin`, while **Restore the default

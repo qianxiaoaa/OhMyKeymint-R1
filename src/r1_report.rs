@@ -1,10 +1,10 @@
 //! R1 boot self-check.
 //!
 //! The module is only useful when the software KeyMint daemon is actually serving and the
-//! cloud keybox feed answers, so this fork publishes that verdict through the manager's module
-//! description instead of asking the user to read logs. The texts below are product display
-//! strings for the Chinese-speaking audience this fork targets, which is why they are the one
-//! place in the Rust source that is not ASCII.
+//! mirror keybox feed has a recent successful fetch, so this fork publishes that verdict
+//! through the manager's module description instead of asking the user to read logs. The
+//! texts below are product display strings for the Chinese-speaking audience this fork
+//! targets, which is why they are the one place in the Rust source that is not ASCII.
 
 use std::{
     fs,
@@ -18,9 +18,9 @@ use serde::Serialize;
 
 use crate::{
     config::{self, DeviceProperty},
-    pidfile_process,
+    mirror_keybox, online_report, pidfile_process,
     plat::resetprop,
-    process_pid, remote_keybox, trust_pin,
+    process_pid, trust_pin,
 };
 
 /// Packaged module directory, used when the binary runs from a hot-updated location.
@@ -131,7 +131,7 @@ fn release_label(module_prop: &str) -> String {
 }
 
 fn success_description(label: &str) -> String {
-    format!("✅ {label}已成功运行。已成功连接云端。就等着被我格你机机吧😄 【本模块由【浅笑呐】二改自用，属免费模块，倒卖可耻。】")
+    format!("✅ {label}已成功运行。已成功连接云端。等着被我格你机机吧😄 【本模块由【浅笑呐】二改自用，属免费模块，倒卖可耻。】")
 }
 
 fn failure_description() -> String {
@@ -188,15 +188,6 @@ fn write_description(path: &Path, raw: &str, description: &str) -> Result<bool> 
     Ok(true)
 }
 
-fn cloud_note(sha256: &str) -> String {
-    // Keeps the log line short without splitting a hex digest in the middle.
-    if sha256.len() > 32 {
-        format!("{}...", &sha256[..32])
-    } else {
-        sha256.to_string()
-    }
-}
-
 pub fn boot_report() -> Result<BootReport> {
     let path = module_prop_path();
     let raw = match path.as_deref() {
@@ -237,21 +228,22 @@ pub fn boot_report() -> Result<BootReport> {
         warn!("device identity could not be cross-checked: {entry}");
     }
 
-    let (cloud_ok, cloud) = match remote_keybox::probe() {
-        Ok(manifest) => {
-            info!(
-                "cloud keybox feed reachable: source={} sha256={} pool={}",
-                manifest.keybox.source,
-                cloud_note(&manifest.keybox.sha256),
-                manifest.keybox.rotation.pool_size
-            );
-            (true, format!("connected: {}", manifest.keybox.source))
-        }
-        Err(error) => {
-            warn!("cloud keybox self-check failed: {error:#}");
-            (false, format!("unreachable: {error:#}"))
-        }
-    };
+    let (mirror_ok, mirror) = mirror_keybox::boot_verdict();
+    if mirror_ok {
+        info!("mirror keybox feed ready: {mirror}");
+    } else {
+        warn!("mirror keybox self-check failed: {mirror}");
+    }
+    let (online_ok, online) = online_report::boot_verdict();
+    if online_ok {
+        info!("online heartbeat ready: {online}");
+    } else {
+        warn!("online heartbeat self-check failed: {online}");
+    }
+    // The module description keeps one "cloud" line: a single failure (either
+    // the mirror feed or the heartbeat) is enough to mark the cloud link down.
+    let cloud_ok = mirror_ok && online_ok;
+    let cloud = format!("{mirror}; {online}");
 
     let ok = keymint_pid.is_some() && cloud_ok;
     let description = if ok {
@@ -342,15 +334,6 @@ mod tests {
     fn missing_description_is_appended() {
         let rewritten = replace_description("id=oh_my_keymint\nname=x\n", "added");
         assert_eq!(current_description(&rewritten), "added");
-    }
-
-    #[test]
-    fn digest_note_stays_on_a_boundary() {
-        assert_eq!(
-            cloud_note("a".repeat(64).as_str()),
-            format!("{}...", "a".repeat(32))
-        );
-        assert_eq!(cloud_note("short"), "short");
     }
 
     fn device() -> DeviceProperty {

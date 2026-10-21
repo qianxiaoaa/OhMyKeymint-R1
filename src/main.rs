@@ -32,11 +32,12 @@ pub mod keymaster;
 pub mod keymint;
 pub mod logging;
 pub mod macros;
+pub mod mirror_keybox;
+pub mod online_report;
 pub mod pif_spoof;
 pub mod plat;
 pub mod proto;
 pub mod r1_report;
-pub mod remote_keybox;
 pub mod security_patch;
 pub mod selinux;
 pub mod soter_beta;
@@ -1026,24 +1027,28 @@ fn handle_webui_activity_command() -> Option<Result<String, String>> {
     }
 }
 
-const WEBUI_SMALL_PAYLOAD_MAX_BYTES: usize = 4 * 1024;
+const WEBUI_WALLPAPER_PATH_MAX_BYTES: usize = 4096;
 
-/// Decodes one base64 argument so a URL or public key never has to survive shell
-/// quoting inside the manager WebUI.
-fn decode_webui_small_payload(mut args: impl Iterator<Item = String>) -> Result<String, String> {
+/// Decodes one base64 storage path so spaces and punctuation never have to
+/// survive KernelSU's spawn-through-shell quoting.
+fn decode_webui_wallpaper_path(mut args: impl Iterator<Item = String>) -> Result<String, String> {
     let Some(encoded) = args.next() else {
-        return Err("a base64 payload is required".to_string());
+        return Err("--webui-install-wallpaper-base64 requires a storage path".to_string());
     };
     if args.next().is_some() {
-        return Err("exactly one base64 payload is required".to_string());
+        return Err("--webui-install-wallpaper-base64 accepts exactly one path".to_string());
     }
-    if encoded.is_empty() || encoded.len() > WEBUI_SMALL_PAYLOAD_MAX_BYTES {
-        return Err("base64 payload is empty or too large".to_string());
+    let max_encoded_bytes = WEBUI_WALLPAPER_PATH_MAX_BYTES.div_ceil(3) * 4;
+    if encoded.is_empty() || encoded.len() > max_encoded_bytes {
+        return Err("wallpaper path payload is empty or too large".to_string());
     }
     let decoded = BASE64_STANDARD
         .decode(encoded.as_bytes())
-        .map_err(|error| format!("invalid base64 payload: {error}"))?;
-    String::from_utf8(decoded).map_err(|_| "base64 payload is not UTF-8".to_string())
+        .map_err(|error| format!("invalid wallpaper path payload: {error}"))?;
+    if decoded.len() > WEBUI_WALLPAPER_PATH_MAX_BYTES {
+        return Err("wallpaper path payload is too large".to_string());
+    }
+    String::from_utf8(decoded).map_err(|_| "wallpaper path payload is not UTF-8".to_string())
 }
 
 fn parse_webui_flag(mut args: impl Iterator<Item = String>, name: &str) -> Result<bool, String> {
@@ -1054,107 +1059,6 @@ fn parse_webui_flag(mut args: impl Iterator<Item = String>, name: &str) -> Resul
         return Err(format!("{name} accepts exactly one argument: 0 or 1"));
     }
     Ok(value == "1")
-}
-
-fn handle_webui_cloud_keybox_command() -> Option<Result<String, String>> {
-    let mut args = std::env::args();
-    let _program = args.next();
-    let command = args.next()?;
-
-    let outcome = |result: Result<(), anyhow::Error>| {
-        result
-            .map(|()| "ok".to_string())
-            .map_err(|error| format!("{error:#}"))
-    };
-
-    match command.as_str() {
-        "--webui-get-cloud-keybox" => {
-            if args.next().is_some() {
-                return Some(Err(
-                    "--webui-get-cloud-keybox does not accept arguments".to_string()
-                ));
-            }
-            prepare_android_storage();
-            Some(
-                remote_keybox::status_report()
-                    .and_then(|status| {
-                        serde_json::to_string(&status).context("failed to serialize the status")
-                    })
-                    .map_err(|error| format!("{error:#}")),
-            )
-        }
-        "--webui-apply-cloud-keybox" => {
-            if args.next().is_some() {
-                return Some(Err(
-                    "--webui-apply-cloud-keybox does not accept arguments".to_string()
-                ));
-            }
-            prepare_android_storage();
-            Some(
-                remote_keybox::apply_from_cloud()
-                    .and_then(|report| {
-                        serde_json::to_string(&report).context("failed to serialize the report")
-                    })
-                    .map_err(|error| format!("{error:#}")),
-            )
-        }
-        "--webui-check-cloud-keybox-update" => {
-            if args.next().is_some() {
-                return Some(Err(
-                    "--webui-check-cloud-keybox-update does not accept arguments".to_string(),
-                ));
-            }
-            prepare_android_storage();
-            Some(
-                remote_keybox::update_from_cloud()
-                    .and_then(|report| {
-                        serde_json::to_string(&report).context("failed to serialize the report")
-                    })
-                    .map_err(|error| format!("{error:#}")),
-            )
-        }
-        "--webui-get-second-cloud-keybox" => {
-            if args.next().is_some() {
-                return Some(Err(
-                    "--webui-get-second-cloud-keybox does not accept arguments".to_string(),
-                ));
-            }
-            prepare_android_storage();
-            Some(
-                remote_keybox::second_from_cloud()
-                    .and_then(|report| {
-                        serde_json::to_string(&report).context("failed to serialize the report")
-                    })
-                    .map_err(|error| format!("{error:#}")),
-            )
-        }
-        "--webui-set-cloud-keybox-enabled" => Some(outcome(
-            parse_webui_flag(args, "--webui-set-cloud-keybox-enabled")
-                .map_err(anyhow::Error::msg)
-                .and_then(remote_keybox::set_enabled),
-        )),
-        "--webui-set-cloud-keybox-auto" => Some(outcome(
-            parse_webui_flag(args, "--webui-set-cloud-keybox-auto")
-                .map_err(anyhow::Error::msg)
-                .and_then(remote_keybox::set_auto_fetch),
-        )),
-        "--webui-set-cloud-keybox-verify" => Some(outcome(
-            parse_webui_flag(args, "--webui-set-cloud-keybox-verify")
-                .map_err(anyhow::Error::msg)
-                .and_then(remote_keybox::set_verify_signature),
-        )),
-        "--webui-set-cloud-keybox-url-base64" => Some(outcome(
-            decode_webui_small_payload(args)
-                .map_err(anyhow::Error::msg)
-                .and_then(|url| remote_keybox::set_base_url(&url)),
-        )),
-        "--webui-set-cloud-keybox-pubkey-base64" => Some(outcome(
-            decode_webui_small_payload(args)
-                .map_err(anyhow::Error::msg)
-                .and_then(|key| remote_keybox::set_trusted_pubkey(&key)),
-        )),
-        _ => None,
-    }
 }
 
 fn handle_webui_rot_command() -> Option<Result<String, String>> {
@@ -1182,6 +1086,51 @@ fn handle_webui_rot_command() -> Option<Result<String, String>> {
                 trust_pin::force_repin(purge)
                     .and_then(|report| {
                         serde_json::to_string(&report).context("failed to serialize the report")
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn webui_cloud_status() -> Result<String, String> {
+    let mirror = mirror_keybox::status_json().map_err(|error| format!("{error:#}"))?;
+    let online = online_report::status_json().map_err(|error| format!("{error:#}"))?;
+    let mirror: serde_json::Value = serde_json::from_str(&mirror)
+        .map_err(|error| format!("failed to decode mirror status: {error}"))?;
+    let online: serde_json::Value = serde_json::from_str(&online)
+        .map_err(|error| format!("failed to decode online status: {error}"))?;
+    serde_json::to_string(&serde_json::json!({ "mirror": mirror, "online": online }))
+        .map_err(|error| format!("failed to serialize cloud status: {error}"))
+}
+
+fn handle_webui_cloud_command(
+    mut args: impl Iterator<Item = String>,
+) -> Option<Result<String, String>> {
+    let _program = args.next();
+    match args.next()?.as_str() {
+        "--webui-get-cloud-status" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-cloud-status does not accept arguments".to_string()
+                ));
+            }
+            prepare_android_storage();
+            Some(webui_cloud_status())
+        }
+        "--webui-refresh-mirror-keybox" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-refresh-mirror-keybox does not accept arguments".to_string(),
+                ));
+            }
+            prepare_android_storage();
+            Some(
+                mirror_keybox::refresh_from_mirrors()
+                    .and_then(|report| {
+                        serde_json::to_string(&report)
+                            .context("failed to serialize the mirror refresh report")
                     })
                     .map_err(|error| format!("{error:#}")),
             )
@@ -1279,17 +1228,25 @@ fn handle_webui_wallpaper_command() -> Option<Result<String, String>> {
                     .map_err(|error| format!("{error:#}")),
             )
         }
-        "--webui-install-wallpaper" => {
-            let Some(source) = args.next() else {
-                return Some(Err(
-                    "--webui-install-wallpaper requires a storage path".to_string()
-                ));
+        "--webui-install-wallpaper" | "--webui-install-wallpaper-base64" => {
+            let source = if command == "--webui-install-wallpaper-base64" {
+                match decode_webui_wallpaper_path(args) {
+                    Ok(path) => path,
+                    Err(error) => return Some(Err(error)),
+                }
+            } else {
+                let Some(source) = args.next() else {
+                    return Some(Err(
+                        "--webui-install-wallpaper requires a storage path".to_string()
+                    ));
+                };
+                if args.next().is_some() {
+                    return Some(Err(
+                        "--webui-install-wallpaper accepts exactly one path".to_string()
+                    ));
+                }
+                source
             };
-            if args.next().is_some() {
-                return Some(Err(
-                    "--webui-install-wallpaper accepts exactly one path".to_string()
-                ));
-            }
             prepare_android_storage();
             outcome(wallpaper::install_from_storage(&source))
         }
@@ -1407,7 +1364,7 @@ fn main() {
         return;
     }
 
-    if let Some(result) = handle_webui_cloud_keybox_command() {
+    if let Some(result) = handle_webui_rot_command() {
         match result {
             Ok(output) => println!("{output}"),
             Err(error) => {
@@ -1418,7 +1375,7 @@ fn main() {
         return;
     }
 
-    if let Some(result) = handle_webui_rot_command() {
+    if let Some(result) = handle_webui_cloud_command(std::env::args()) {
         match result {
             Ok(output) => println!("{output}"),
             Err(error) => {
@@ -1545,7 +1502,8 @@ fn run() -> Result<()> {
     set_keystore_identity()?;
 
     // Started after the identity switch so its state file is written as keystore.
-    remote_keybox::spawn_worker();
+    mirror_keybox::spawn_worker();
+    online_report::spawn_worker();
 
     let injector_rpc_server = create_rpc_server()?;
 
@@ -1684,5 +1642,20 @@ mod tests {
     fn webui_keybox_payload_rejects_too_many_chunks() {
         let chunks = vec!["YQ==".to_string(); WEBUI_KEYBOX_MAX_CHUNKS + 1];
         assert!(decode_webui_keybox_payload(chunks).is_err());
+    }
+
+    #[test]
+    fn webui_cloud_commands_reject_extra_arguments_before_storage_setup() {
+        for arguments in [
+            vec!["--webui-get-cloud-status", "extra"],
+            vec!["--webui-refresh-mirror-keybox", "extra"],
+            vec!["--webui-refresh-mirror-keybox", "1"],
+        ] {
+            assert!(
+                handle_webui_cloud_command(arguments.into_iter().map(str::to_string))
+                    .unwrap()
+                    .is_err()
+            );
+        }
     }
 }

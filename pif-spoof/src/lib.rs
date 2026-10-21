@@ -1212,7 +1212,7 @@ fn parse_hook_targets(contents: &str) -> Vec<HookTarget> {
     targets
 }
 
-fn parse_map_device(value: &str) -> Option<libc::dev_t> {
+pub(crate) fn parse_map_device(value: &str) -> Option<libc::dev_t> {
     let (major, minor) = value.split_once(':')?;
     let major = u32::from_str_radix(major, 16).ok()?;
     let minor = u32::from_str_radix(minor, 16).ok()?;
@@ -1458,6 +1458,7 @@ fn read_profile_from_companion(
     stream: &mut std::os::unix::net::UnixStream,
 ) -> std::io::Result<Option<PifProfile>> {
     stream.set_read_timeout(Some(IPC_TIMEOUT))?;
+    stream.write_all(b"P")?;
     let mut length = [0u8; 4];
     stream.read_exact(&mut length)?;
     let length = u32::from_be_bytes(length) as usize;
@@ -1479,6 +1480,7 @@ fn read_profile_from_companion(
 
 fn read_soter_from_companion(stream: &mut std::os::unix::net::UnixStream) -> std::io::Result<bool> {
     stream.set_read_timeout(Some(IPC_TIMEOUT))?;
+    stream.write_all(b"P")?;
     read_soter_frame(stream)
 }
 
@@ -1509,6 +1511,29 @@ fn read_soter_frame(stream: &mut impl Read) -> std::io::Result<bool> {
 }
 
 fn companion(stream: &mut std::os::unix::net::UnixStream) {
+    // Multiplexed companion protocol: the client sends one opcode byte first.
+    // b'P' = PIF profile (+ Soter flag) frame.
+    // Old PIF-only builds never send an opcode; those connections carry no
+    // data at all. The read times out rather than misrouting a frame.
+    let mut opcode = [0u8; 1];
+    if let Err(error) = stream.set_read_timeout(Some(IPC_TIMEOUT)) {
+        log_android(&format!("PIF companion read setup failed: {error}"));
+        return;
+    }
+    match stream.read_exact(&mut opcode) {
+        Ok(()) if opcode[0] == b'P' => {}
+        Ok(()) => {
+            log_android(&format!(
+                "PIF companion rejected unknown opcode 0x{:02x}",
+                opcode[0]
+            ));
+            return;
+        }
+        Err(error) => {
+            log_android(&format!("PIF companion read error before frame: {error}"));
+            return;
+        }
+    }
     let payload = load_profile_for_companion().unwrap_or_else(|error| {
         log_android(&format!("PIF companion rejected profile: {error}"));
         Vec::new()

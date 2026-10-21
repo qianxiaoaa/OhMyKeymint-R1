@@ -17,6 +17,7 @@ import {
   Cli,
   MAX_WALLPAPER_BYTES,
   WALLPAPER_EXTENSIONS,
+  type CloudStatus,
   type DiagnosticsState,
   type KeyboxInspector,
   type KeyboxRevocationStatus,
@@ -29,7 +30,6 @@ import { fetchLatestSecurityPatch } from '../security_patch'
 import { wallpaper } from '../wallpaper'
 import { isDev } from '../utils/dev'
 import HomeView, { type KeyboxStatus, type ModuleStatus, type TeeStatus } from './HomeView.vue'
-import CloudKeyboxDialog from './CloudKeyboxDialog.vue'
 import PifFingerprintDialog from './PifFingerprintDialog.vue'
 import SettingsView from './SettingsView.vue'
 import SoterDialog from './SoterDialog.vue'
@@ -45,6 +45,25 @@ const appList = new AppList(config)
 const fileSelector = new FileSelector()
 const history = new History()
 
+const DEV_CLOUD_STATUS: CloudStatus = {
+  mirror: {
+    installed_sha256: 'a'.repeat(64),
+    installed_source: 'mirror',
+    last_fetch_unix: Math.floor(Date.now() / 1000),
+    last_sha256: 'a'.repeat(64),
+    last_source: 'yurikey',
+    last_status: 'applied',
+    last_error: '',
+  },
+  online: {
+    module_id: `omk-${'b'.repeat(32)}`,
+    last_report_unix: Math.floor(Date.now() / 1000),
+    last_status: 'ok',
+    last_error: '',
+    interval_seconds: 1800,
+  },
+}
+
 const pageIndex = ref(0)
 const pageDirection = ref(1)
 const pageScrollPositions = [0, 0, 0]
@@ -59,25 +78,23 @@ const keyboxRevocation = ref<KeyboxRevocationStatus>('not_checked')
 const keyboxInspector = ref<KeyboxInspector | null>(null)
 const diagnostics = ref<DiagnosticsState | null>(null)
 const diagnosticsStatus = ref<'loading' | 'ready' | 'error'>('loading')
+const cloudStatus = ref<CloudStatus | null>(null)
 const teeStatus = ref<TeeStatus>('loading')
 const securityPatch = ref<string | null>(null)
 const spoofedDevice = ref<string | null | undefined>(undefined)
 const moduleName = ref('Oh My Keymint-R1')
 const securityPatchBusy = ref<'sync' | 'restore' | null>(null)
+const keyboxBusy = ref<'install' | 'mirror' | null>(null)
 const soterOpen = ref(false)
 const soterHalOpen = ref(false)
 const pifOpen = ref(false)
-const cloudKeyboxOpen = ref(false)
-const cloudKeyboxBusy = ref(false)
 const keyboxOpen = ref(false)
 const selectedKeybox = ref<SelectedContents | null>(null)
-const keyboxBusy = ref(false)
 const targetsView = ref<InstanceType<typeof TargetsView> | null>(null)
 const settingsView = ref<InstanceType<typeof SettingsView> | null>(null)
 const pifDialog = ref<InstanceType<typeof PifFingerprintDialog> | null>(null)
 const soterDialog = ref<InstanceType<typeof SoterDialog> | null>(null)
 const soterHalDialog = ref<InstanceType<typeof SoterHalDialog> | null>(null)
-const cloudKeyboxDialog = ref<InstanceType<typeof CloudKeyboxDialog> | null>(null)
 
 const pageIds = ['home', 'tools', 'settings'] as const
 const navItems = computed(() => [
@@ -292,7 +309,6 @@ function onTargetsOverlayClose(): void {
 function handleEscape(): void {
   if (soterOpen.value && soterDialog.value?.busy) return
   if (soterHalOpen.value && soterHalDialog.value?.busy) return
-  if (cloudKeyboxOpen.value && cloudKeyboxDialog.value?.busy) return
   if (targetsOpen.value && targetsView.value?.dismissOverlay()) return
   if (history.size > 0) history.back()
 }
@@ -454,7 +470,7 @@ async function chooseKeybox(): Promise<void> {
 async function installKeybox(): Promise<void> {
   const selected = selectedKeybox.value
   if (!selected || keyboxBusy.value) return
-  keyboxBusy.value = true
+  keyboxBusy.value = 'install'
   try {
     if (!isDev()) await cli.installKeybox(selected.contents)
     notify(i18n.t('prompt_keybox_replaced'))
@@ -464,26 +480,60 @@ async function installKeybox(): Promise<void> {
   } catch (error) {
     notify(i18n.t('prompt_keybox_replace_error', error instanceof Error ? error.message : String(error)), true)
   } finally {
-    keyboxBusy.value = false
+    keyboxBusy.value = null
+  }
+}
+
+async function refreshMirrorKeybox(): Promise<void> {
+  if (keyboxBusy.value !== null) return
+  keyboxBusy.value = 'mirror'
+  try {
+    const report = isDev()
+      ? { ok: true, applied: true, source: 'yurikey', sha256: 'a'.repeat(64), size: 4096, note: 'mirror keybox installed' }
+      : await cli.refreshMirrorKeybox()
+    notify(
+      i18n.t(
+        report.ok && report.applied
+          ? 'prompt_mirror_keybox_applied'
+          : report.ok
+            ? 'prompt_mirror_keybox_unchanged'
+            : 'prompt_mirror_keybox_failed',
+      ),
+      !report.ok,
+    )
+    await Promise.all([refreshIdentity(true), refreshCloud()])
+  } catch (error) {
+    console.error('Unable to refresh the mirror Keybox:', error)
+    notify(i18n.t('prompt_mirror_keybox_failed'), true)
+  } finally {
+    keyboxBusy.value = null
+  }
+}
+
+async function refreshCloud(): Promise<void> {
+  try {
+    cloudStatus.value = isDev() ? DEV_CLOUD_STATUS : await cli.getCloudStatus()
+  } catch (error) {
+    console.error('Unable to load OMK cloud status:', error)
+    cloudStatus.value = null
   }
 }
 
 async function chooseWallpaper(): Promise<void> {
   try {
+    // The system image picker is preferred; the in-app browser is only used as
+    // a fallback when the WebView cannot launch the native picker.
     const selected = await fileSelector.getSystemFileContent({
       extensions: WALLPAPER_EXTENSIONS,
       maxBytes: MAX_WALLPAPER_BYTES,
-      pathOnly: true,
       wrongTypeKey: 'prompt_wallpaper_image_required',
       tooLargeKey: 'prompt_wallpaper_too_large',
       emptyKey: 'replace_wallpaper_storage_empty',
     })
     if (!selected) return
-    // A path lets the helper copy the picture on the device; only the native
-    // picker, which cannot expose a real path, needs the chunked upload.
-    const installed = selected.kind === 'path'
-      ? await wallpaper.installFromStorage(cli, selected.path)
-      : await wallpaper.installBytes(cli, selected.contents)
+    const installed = selected.kind === 'contents'
+      ? await wallpaper.installBytes(cli, selected.contents)
+      : await wallpaper.installFromStorage(cli, selected.path)
     if (installed) notify(i18n.t('prompt_wallpaper_applied'))
     else notify(wallpaper.status, true)
   } catch (error) {
@@ -521,40 +571,13 @@ function onTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': openTargets(); break
     case 'installKeybox': void chooseKeybox(); break
-    case 'cloudKeybox': void fetchCloudKeybox(); break
+    case 'refreshMirrorKeybox': void refreshMirrorKeybox(); break
     case 'syncSecurityPatch': void syncPatch(false); break
     case 'restoreSecurityPatch': void syncPatch(true); break
     case 'openSoterBeta': soterOpen.value = true; break
     case 'openSoterHal': soterHalOpen.value = true; break
     case 'spoofPif': pifOpen.value = true; break
   }
-}
-
-async function fetchCloudKeybox(): Promise<void> {
-  if (cloudKeyboxBusy.value) return
-  cloudKeyboxBusy.value = true
-  notify(i18n.t('cloud_keybox_working'))
-  try {
-    const result = await cli.applyCloudKeybox()
-    if (result.applied) {
-      notify(i18n.t('cloud_keybox_success'))
-    } else {
-      notify(i18n.t('cloud_keybox_latest'))
-    }
-    // Cloud-delivered notices, e.g. free-module reminders, are shown as-is.
-    for (const line of result.notice) notify(line)
-    if (result.applied) await onCloudKeyboxChanged()
-  } catch (error) {
-    // The cli command surfaces a human-readable reason (e.g. the server is
-    // unreachable or the current Keybox is already the newest one).
-    notify(error instanceof Error ? error.message : String(error), true)
-  } finally {
-    cloudKeyboxBusy.value = false
-  }
-}
-
-async function onCloudKeyboxChanged(): Promise<void> {
-  await Promise.all([refreshIdentity(true), refreshDiagnostics()])
 }
 
 onMounted(async () => {
@@ -595,6 +618,7 @@ onMounted(async () => {
     refreshModuleName(),
     refreshIdentity(),
     refreshDiagnostics(),
+    refreshCloud(),
     wallpaper.load(cli),
   ])
 })
@@ -709,21 +733,23 @@ watch(keyboxOpen, open => {
           :keybox-inspector="keyboxInspector"
           :diagnostics="diagnostics"
           :diagnostics-status="diagnosticsStatus"
+          :cloud-status="cloudStatus"
           :tee-status="teeStatus"
           :security-patch="securityPatch"
           :spoofed-device="spoofedDevice"
           :module-name="moduleName"
           @refresh-diagnostics="refreshDiagnostics"
+          @refresh-cloud="refreshCloud"
         />
       </Transition>
       <Transition name="page-switch">
         <ToolsView
           v-show="pageIndex === 1"
           :security-patch-busy="securityPatchBusy"
-          :cloud-keybox-busy="cloudKeyboxBusy"
+          :keybox-busy="keyboxBusy"
           @open-app-targets="onTool('openAppTargets')"
           @install-keybox="onTool('installKeybox')"
-          @cloud-keybox="onTool('cloudKeybox')"
+          @refresh-mirror-keybox="onTool('refreshMirrorKeybox')"
           @sync-security-patch="onTool('syncSecurityPatch')"
           @restore-security-patch="onTool('restoreSecurityPatch')"
           @open-soter-beta="onTool('openSoterBeta')"
@@ -739,7 +765,6 @@ watch(keyboxOpen, open => {
           @overlay-close="onSettingsOverlayClose"
           @choose-wallpaper="chooseWallpaper"
           @reset-wallpaper="resetWallpaper"
-          @open-cloud-keybox="cloudKeyboxOpen = true"
         />
       </Transition>
     </main>
@@ -787,11 +812,11 @@ watch(keyboxOpen, open => {
         <div class="confirm-sheet">
           <p>{{ selectedKeybox ? i18n.t('replace_keybox_selected_file', selectedKeybox.name) : '' }}</p>
           <div class="confirm-actions">
-            <MiuixButton :disabled="keyboxBusy" @click="close">
+            <MiuixButton :disabled="keyboxBusy !== null" @click="close">
               {{ i18n.t('functional_button_cancel') }}
             </MiuixButton>
-            <MiuixButton type="primary" :disabled="keyboxBusy" @click="installKeybox">
-              <MiuixProgressIndicator v-if="keyboxBusy" type="circular" :size="18" />
+            <MiuixButton type="primary" :disabled="keyboxBusy !== null" @click="installKeybox">
+              <MiuixProgressIndicator v-if="keyboxBusy !== null" type="circular" :size="18" />
               {{ i18n.t('functional_button_replace') }}
             </MiuixButton>
           </div>
@@ -808,13 +833,6 @@ watch(keyboxOpen, open => {
     />
     <SoterDialog ref="soterDialog" v-model="soterOpen" :cli="cli" @notify="notify" />
     <SoterHalDialog ref="soterHalDialog" v-model="soterHalOpen" :cli="cli" @notify="notify" />
-    <CloudKeyboxDialog
-      ref="cloudKeyboxDialog"
-      v-model="cloudKeyboxOpen"
-      :cli="cli"
-      @notify="notify"
-      @changed="onCloudKeyboxChanged"
-    />
     <MiuixSnackbarHost />
   </div>
 </template>
