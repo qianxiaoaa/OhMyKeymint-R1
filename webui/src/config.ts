@@ -5,6 +5,9 @@ export interface ConfigData {
 export class Config {
   #data: ConfigData = { target: [] }
 
+  // read/write are abstract here: concrete subclasses wire them to a storage
+  // backend (ConfigOhMyKeyMint uses the OMK helper CLI). Instantiating this
+  // base class directly and calling either method is a programming error.
   async read(): Promise<void> {
     throw new Error('Config.read is not implemented')
   }

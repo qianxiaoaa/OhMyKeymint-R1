@@ -698,6 +698,6 @@ for a repeatable defect, and the
 [Feature request form](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues/new?template=feature_request.yml)
 for a proposed change. Read this FAQ and search existing reports first.
 
-For community discussion, use the Telegram link in the [README](../README.md).
+For community discussion, use the group link in the [README](../README.md).
 Never share private keys, generated seeds, or personal identifiers in any
 support channel.

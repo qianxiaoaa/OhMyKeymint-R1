@@ -26,7 +26,8 @@ const CONFIG_PATH: &str = "/data/misc/keystore/omk/config.toml";
 /// Legacy format: identical to the current v1 except an optional `[server]` table
 /// that was removed when the client stopped configuring cloud keybox services.
 const CONFIG_VERSION_V2: u32 = 2;
-const CONFIG_VERSION_V1: u32 = 1;
+/// Current on-disk format. v0 (prerelease) configs upgrade to this in place and
+/// v2 configs are downgraded to it, so a single constant is the source of truth.
 const CURRENT_CONFIG_VERSION: u32 = 1;
 
 const REPLACE_SAVE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -505,7 +506,7 @@ fn upgrade_v0_to_v1(table: &mut toml::Table) -> Result<()> {
     table.remove("trust_record");
     table.insert(
         "version".to_string(),
-        toml::Value::Integer(i64::from(CONFIG_VERSION_V1)),
+        toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
     );
     let trust = table
         .get_mut("trust")
@@ -530,7 +531,7 @@ fn downgrade_v2_to_v1(table: &mut toml::Table) -> Result<()> {
     table.remove("server");
     table.insert(
         "version".to_string(),
-        toml::Value::Integer(i64::from(CONFIG_VERSION_V1)),
+        toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
     );
     Ok(())
 }
@@ -2067,7 +2068,7 @@ imei2 = ""
             toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
         table.insert(
             "version".to_string(),
-            toml::Value::Integer(i64::from(CONFIG_VERSION_V1)),
+            toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
         );
         table
             .get_mut("trust")

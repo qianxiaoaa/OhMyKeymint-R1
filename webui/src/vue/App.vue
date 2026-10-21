@@ -347,7 +347,7 @@ async function saveTargets(): Promise<void> {
 // committed webroot has to stay byte-identical to a fresh WebUI build.
 async function refreshModuleName(): Promise<void> {
   if (isDev()) {
-    moduleName.value = 'Oh My Keymint-R1-1.3.6-xxxxxxx'
+    moduleName.value = 'Oh My Keymint-R1 (dev)'
   } else {
     try {
       moduleName.value = await cli.getModuleName()

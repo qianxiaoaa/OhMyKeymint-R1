@@ -12,6 +12,7 @@ const SUPPORTED_ABIS = ['arm64-v8a', 'x86_64'] as const
 type SupportedAbi = typeof SUPPORTED_ABIS[number]
 type HelperPaths = { abi: SupportedAbi, inject: string, keymint: string }
 const KEYBOX_BASE64_CHUNK_BYTES = 48 * 1024
+const MAX_SCOOP_JSON_BYTES = 64 * 1024
 const MAX_BULLETIN_BYTES = 2 * 1024 * 1024
 const MAX_PIF_CATALOG_BYTES = 64 * 1024
 const MAX_PIF_STATE_BYTES = 2 * 1024
@@ -1113,7 +1114,10 @@ export class Cli {
 
   async #runInject(args: string[]): Promise<string> {
     const { inject } = await this.#getHelperPaths()
-    return this.#run(inject, args)
+    // getScoop returns a short package list, setScoop echoes nothing and
+    // getTeeStatus emits a single token; a 64 KiB cap matches the other OMK
+    // helpers and keeps an unexpectedly chatty inject from exhausting memory.
+    return this.#run(inject, args, MAX_SCOOP_JSON_BYTES)
   }
 
   async #getHelperPaths(): Promise<HelperPaths> {

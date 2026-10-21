@@ -95,7 +95,17 @@ while true; do
   # the running verdict instead of the install-time placeholder. Bounded retries,
   # then the previous text stays on screen and the daemon writes its own reasons
   # to the keymint log.
-  r1_refresh_description "$TARGET" &
+  # Only one refresh is in flight at a time. The variable survives across loop
+  # iterations (same shell), so a crash-looping keymint cannot stack concurrent
+  # --r1-boot-report probes.
+  refresh_running=0
+  if [ -n "$refresh_pid" ] && kill -0 "$refresh_pid" 2>/dev/null; then
+    refresh_running=1
+  fi
+  if [ "$refresh_running" -eq 0 ]; then
+    r1_refresh_description "$TARGET" &
+    refresh_pid=$!
+  fi
 
   while kill -0 "$child_pid" 2>/dev/null; do
     if consume_restart_request; then

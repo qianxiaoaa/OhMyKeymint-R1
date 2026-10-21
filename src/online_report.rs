@@ -20,7 +20,7 @@ use std::{
     fs::{self, File},
     io::Read,
     path::Path,
-    sync::{Condvar, Mutex, OnceLock},
+    sync::OnceLock,
     time::{Duration, SystemTime},
 };
 
@@ -54,7 +54,6 @@ const STATE_PATH: &str = root_path!("data/online_report.toml");
 const STATE_VERSION: u32 = 1;
 
 static WORKER_STARTED: OnceLock<()> = OnceLock::new();
-static WORKER_WAKE: OnceLock<(Condvar, Mutex<bool>)> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -345,10 +344,6 @@ pub fn boot_verdict() -> (bool, String) {
     }
 }
 
-fn wake_slot() -> &'static (Condvar, Mutex<bool>) {
-    WORKER_WAKE.get_or_init(|| (Condvar::new(), Mutex::new(false)))
-}
-
 /// Low frequency heartbeat worker: reports every `online_interval` seconds
 /// after boot. It performs no network work until `sys.boot_completed`.
 pub fn spawn_worker() {
@@ -363,7 +358,6 @@ pub fn spawn_worker() {
 }
 
 fn run_worker() {
-    let (wake, pending) = wake_slot();
     loop {
         let now = now_unix();
         let state = read_state();
@@ -377,21 +371,13 @@ fn run_worker() {
         }
         let state = read_state();
         let interval = clamp_interval(state.interval_seconds);
-        let sleep = now_unix().saturating_sub(state.last_report_unix).max(0);
-        let sleep = if sleep >= interval as i64 {
+        let elapsed = now_unix().saturating_sub(state.last_report_unix).max(0);
+        let sleep = if elapsed >= interval as i64 {
             60
         } else {
-            (interval as i64 - sleep) as u64
+            (interval as i64 - elapsed) as u64
         };
-        let mut guard = pending.lock().unwrap_or_else(|error| error.into_inner());
-        if !*guard {
-            let (locked, _) = wake
-                .wait_timeout(guard, Duration::from_secs(sleep))
-                .unwrap_or_else(|error| error.into_inner());
-            guard = locked;
-        }
-        *guard = false;
-        drop(guard);
+        std::thread::sleep(Duration::from_secs(sleep));
     }
 }
 

@@ -441,11 +441,16 @@ def delete_old_zips(
         if abi != "arm64-v8a":
             continue
         # The arm64 package intentionally omits its ABI in the filename; retain a
-        # separately built x86_64 package with the same version.
+        # separately built x86_64 package with the same version and version code.
+        # Restrict the glob to the current version code so older releases are
+        # never removed just because this build is arm64.
         old_zips.update(
             path
             for path in glob.glob(
-                os.fspath(TARGET_ROOT / f"{MODULE_NAME_PREFIX}-*-{build_type}.zip")
+                os.fspath(
+                    TARGET_ROOT
+                    / f"{MODULE_NAME_PREFIX}-{version}-{version_code}-*-{build_type}.zip"
+                )
             )
             if not path.endswith(f"-x86_64-{build_type}.zip")
         )

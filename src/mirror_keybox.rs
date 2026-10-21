@@ -25,7 +25,7 @@ use std::{
     fs,
     io::{BufReader, Read},
     path::Path,
-    sync::{Condvar, Mutex, OnceLock},
+    sync::OnceLock,
     time::{Duration, SystemTime},
 };
 
@@ -78,7 +78,6 @@ const STATE_VERSION: u32 = 1;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 static WORKER_STARTED: OnceLock<()> = OnceLock::new();
-static WORKER_WAKE: OnceLock<(Condvar, Mutex<bool>)> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -535,10 +534,6 @@ pub fn boot_verdict() -> (bool, String) {
     }
 }
 
-fn wake_slot() -> &'static (Condvar, Mutex<bool>) {
-    WORKER_WAKE.get_or_init(|| (Condvar::new(), Mutex::new(false)))
-}
-
 /// Low frequency refresh worker: fetches the fixed mirrors every 24 hours after
 /// boot. It performs no network work until `sys.boot_completed`.
 pub fn spawn_worker() {
@@ -553,7 +548,6 @@ pub fn spawn_worker() {
 }
 
 fn run_worker() {
-    let (wake, pending) = wake_slot();
     let interval = REFRESH_INTERVAL.as_secs() as i64;
     loop {
         let now = now_unix();
@@ -564,23 +558,15 @@ fn run_worker() {
                 Err(error) => log::warn!("automatic mirror keybox update failed: {error:#}"),
             }
         }
-        let sleep = now_unix()
+        let elapsed = now_unix()
             .saturating_sub(read_state().last_fetch_unix)
             .max(0);
-        let sleep = if sleep >= interval {
+        let sleep = if elapsed >= interval {
             60
         } else {
-            (interval - sleep) as u64
+            (interval - elapsed) as u64
         };
-        let mut guard = pending.lock().unwrap_or_else(|error| error.into_inner());
-        if !*guard {
-            let (locked, _) = wake
-                .wait_timeout(guard, Duration::from_secs(sleep))
-                .unwrap_or_else(|error| error.into_inner());
-            guard = locked;
-        }
-        *guard = false;
-        drop(guard);
+        std::thread::sleep(Duration::from_secs(sleep));
     }
 }
 

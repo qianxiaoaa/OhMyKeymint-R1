@@ -110,6 +110,14 @@ def find_bssl_sys_patch() -> Path:
     return build_dir.resolve().parent / "rust" / "bssl-sys"
 
 
+# Note: the generated [env] block intentionally does not set BORINGSSL_BUILD_DIR.
+# bssl-sys reads it from a plain environment variable and a global key cannot
+# vary per target, so a static value would point x86_64 builds at the arm64
+# build tree. Tools that build a specific target (build.py, deploy_hot_update.py)
+# inject it themselves; leave the fallback (~/.cargo/boringssl/build) to the
+# arm64 build that the fallback happens to match.
+
+
 def render_config(ndk_root: Path, host_tag: str, api_level: int) -> str:
     bin_dir = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "bin"
     sysroot = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "sysroot"

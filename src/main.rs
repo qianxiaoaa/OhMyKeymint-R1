@@ -50,7 +50,6 @@ pub mod webui_activity;
 pub mod webui_http;
 
 include!(concat!(env!("OUT_DIR"), "/aidl.rs"));
-// include!( "./aidl.rs"); // for development only
 
 fn storage_warn(message: String) {
     if log::log_enabled!(log::Level::Warn) {
@@ -1342,7 +1341,7 @@ fn main() {
 
     if let Some(result) = handle_webui_security_bulletin_command() {
         match result {
-            Ok(output) => print!("{output}"),
+            Ok(output) => println!("{output}"),
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(2);
@@ -1514,15 +1513,12 @@ fn run() -> Result<()> {
     mirror_keybox::spawn_worker();
     online_report::spawn_worker();
 
-    let injector_rpc_server = create_rpc_server()?;
+    let server = create_rpc_server()?;
 
     crate::keymaster::metrics_store::update_keystore_crash_count();
 
     info!("starting thread pool");
     rsbinder::ProcessState::start_thread_pool();
-
-    info!("using injector backend");
-    let server = injector_rpc_server;
 
     info!("creating keystore service");
     let dev = KeystoreService::new_native_binder().context("failed to create omk service")?;

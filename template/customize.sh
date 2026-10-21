@@ -55,6 +55,10 @@ if [ ! -f "$TMPDIR/verify.sh" ]; then
   abort    "*********************************************************"
 fi
 . "$TMPDIR/verify.sh"
+# Extract customize.sh and verify.sh into a throwaway directory purely to run
+# their member sha256 checksums; the expanded copies are not installed. If the
+# download was truncated the abort below stops installation before anything is
+# written to the module directory.
 extract "$ZIPFILE" 'customize.sh'  "$TMPDIR/.vunzip"
 extract "$ZIPFILE" 'verify.sh'     "$TMPDIR/.vunzip"
 

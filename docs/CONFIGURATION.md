@@ -663,18 +663,20 @@ imei2 = ""
 #### `version`
 
 This identifies the configuration format. The supported value is the integer
-`2`. It is not an Android version or an OMK release number. Do not increment it;
+`1`. It is not an Android version or an OMK release number. Do not increment it;
 the current file should keep this value unchanged. Live reload rejects other
 values and keeps the last valid runtime configuration.
 
-At keymint startup, a missing `version` is treated as `0`. Versions `0` and `1`
-are migrated in place to `2` before the service starts, and `os_version` is set
-to `"auto"` so later Android upgrades are detected on the next keymint start.
+At keymint startup, a missing `version` is treated as `0`. Version `0` is
+migrated in place to `1` before the service starts, and `os_version` is set to
+`"auto"` so later Android upgrades are detected on the next keymint start.
 Startup also removes the obsolete `trust_record`. For version `0`, missing
 patch-level fields inherit the configured `security_patch`. Other configured
-and unknown values are preserved. Migration is not performed during live
-reload, so restart keymint to migrate an older file. An unsupported future
-version is never overwritten.
+and unknown values are preserved. An older `2` (the prerelease format that
+carried an optional `[server]` table) is downgraded to `1` and loses only that
+now-unused table. Migration is not performed during live reload, so restart
+keymint to migrate an older file. An unsupported future version is never
+overwritten.
 
 ### `[main]`
 
@@ -1070,6 +1072,34 @@ fields.
 
 The MEID used by devices that provide one. Many devices have no MEID, so an
 empty value is valid. Its absence does not invalidate an available IMEI.
+
+### `[r1]`
+
+OMK-R1-specific hardening. The table is optional; the defaults below apply when
+it is absent.
+
+```toml
+[r1]
+# Root of trust pinning: "pinned" or "auto".
+rot_pin = "pinned"
+# Clear key blobs bound to a previous root of trust at startup.
+rot_auto_heal = true
+```
+
+#### `rot_pin`
+
+How the verified boot root of trust is handled.
+
+- `pinned` (default): OMK pins the root of trust from verified boot metadata
+  into `config.toml` at startup, so a rollback or a different boot state does
+  not silently change the reported root of trust.
+- `auto`: the root of trust follows the live verified boot state each boot.
+
+#### `rot_auto_heal`
+
+When `true` (default), OMK clears key blobs that were created under a previous
+root of trust instead of letting them keep returning `InvalidKeyBlob` forever.
+Set it to `false` to keep such blobs and surface the error to the app.
 
 ### `config.toml` apply summary
 
