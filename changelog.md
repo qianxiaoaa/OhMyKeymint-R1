@@ -1,7 +1,6 @@
-feat: remove UID filter, bump versionCode to 105, fix WebUI cloud helper
+fix: write module.prop from a live cloud heartbeat
 
-- Remove the Chunqiu UID filter from companion, WebUI, and docs
-- Update R1 module descriptions and the keybox tool copy
-- Prefer the installed module keymint binary for WebUI cloud status
-- Drop unused crate dependencies so clippy -D warnings stays clean
-- Default OMK_VERSION_CODE to 105
+- Stamp success only when keymint is running and the report endpoint answers
+- Keep GitHub keybox mirrors on the refresh and WebUI status path
+- Locate the packaged libs/*/keymint binary for the boot self-check
+- Default OMK_VERSION_CODE to 106
