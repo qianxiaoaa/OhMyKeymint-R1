@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   MiuixArrowPreference,
   MiuixCard,
-  MiuixBottomSheet,
   MiuixDivider,
   MiuixDropdownPreference,
   MiuixIcon,
@@ -17,7 +16,8 @@ import {
   MiuixTopAppBar,
   type MiuixDropdownItem,
 } from 'miuix-vue'
-import { Background, Close, Image, Layers, Reset, Sidebar, Theme, Translate, Tune } from 'miuix-vue/icons'
+import MiuixBottomSheet from './StableBottomSheet.vue'
+import { Background, Close, Image, Layers, Photos, Reset, Sidebar, Tasks, Theme, Translate, Tune } from 'miuix-vue/icons'
 import {
   ACCENT_COLORS,
   ACCENT_SEEDS,
@@ -32,6 +32,7 @@ import {
   type PaletteStyle,
 } from '../appearance'
 import { i18n } from '../i18n'
+import { afterPaint } from '../app_list/app_list'
 import { wallpaper } from '../wallpaper'
 
 interface Choice<T extends string> {
@@ -116,7 +117,12 @@ const colorSpecIndex = ref(Math.max(0, COLOR_SPECS.indexOf(appearance.colorSpec)
 const options = ref<Record<AppearanceOption, boolean>>(readOptions())
 const interfaceScale = ref(appearance.interfaceScale)
 const showScaleSlider = ref(false)
+let appliedScale = appearance.interfaceScale
+let scaleEditing = false
+let scalePointerCancelled = false
 const languageSheetOpen = ref(false)
+const visibleLanguageCount = ref(8)
+let languageRenderGeneration = 0
 const emit = defineEmits<{
   'overlay-open': []
   'overlay-close': []
@@ -124,9 +130,16 @@ const emit = defineEmits<{
   'reset-wallpaper': []
 }>()
 
-watch(languageSheetOpen, open => {
-  if (open) emit('overlay-open')
-  else emit('overlay-close')
+watch(languageSheetOpen, async open => {
+  const generation = ++languageRenderGeneration
+  if (open) {
+    emit('overlay-open')
+    // Present the sheet before mounting every animated radio preference.
+    visibleLanguageCount.value = 8
+    await afterPaint()
+    if (generation !== languageRenderGeneration || !languageSheetOpen.value) return
+    visibleLanguageCount.value = languageItems.value.length
+  } else emit('overlay-close')
 })
 
 defineExpose({ dismissOverlay: () => { languageSheetOpen.value = false } })
@@ -145,15 +158,23 @@ function syncAppearanceState(): void {
   accentIndex.value = Math.max(0, ACCENT_COLORS.indexOf(appearance.accent))
   paletteStyleIndex.value = Math.max(0, PALETTE_STYLES.indexOf(appearance.paletteStyle))
   colorSpecIndex.value = Math.max(0, COLOR_SPECS.indexOf(appearance.colorSpec))
-  options.value = readOptions()
-  interfaceScale.value = appearance.interfaceScale
+  const nextOptions = readOptions()
+  if (Object.keys(nextOptions).some(key => (
+    nextOptions[key as AppearanceOption] !== options.value[key as AppearanceOption]
+  ))) options.value = nextOptions
+  const nextScale = appearance.interfaceScale
+  // Theme/color refreshes must not replace an in-progress slider draft.
+  if (!scaleEditing || nextScale !== appliedScale) {
+    scaleEditing = false
+    interfaceScale.value = nextScale
+  }
+  appliedScale = nextScale
 }
 
 function selectMode(index: number): void {
   const choice = MODE_CHOICES[index]
   if (!choice) return
   appearance.setMode(choice.value)
-  syncAppearanceState()
 }
 
 function selectLanguage(index: number): void {
@@ -168,34 +189,72 @@ function selectAccent(index: number): void {
   const choice = ACCENT_CHOICES[index]
   if (!choice) return
   appearance.setAccent(choice.value)
-  syncAppearanceState()
 }
 
 function selectPaletteStyle(index: number): void {
   const style = PALETTE_STYLES[index] as PaletteStyle | undefined
   if (style) appearance.setPaletteStyle(style)
-  syncAppearanceState()
 }
 
 function selectColorSpec(index: number): void {
   const spec = COLOR_SPECS[index] as ColorSpec | undefined
   if (spec) appearance.setColorSpec(spec)
-  syncAppearanceState()
 }
 
 function setOption(option: AppearanceOption, enabled: boolean): void {
   appearance.setOption(option, enabled)
-  // Refresh the local snapshot after a write so the switch state follows the
-  // controller even when another part of the WebUI reacts to the change.
-  syncAppearanceState()
 }
 
 function setInterfaceScale(value: number): void {
-  interfaceScale.value = Math.round(value)
-  appearance.setInterfaceScale(value)
+  if (scalePointerCancelled) return
+  scaleEditing = true
+  interfaceScale.value = Math.max(80, Math.min(110, Math.round(value)))
 }
 
-onBeforeUnmount(appearance.onChange(syncAppearanceState))
+function commitInterfaceScale(): void {
+  if (!scaleEditing) return
+  scaleEditing = false
+  // Resizing the entire page while the pointer is down changes the slider's
+  // own geometry. Apply zoom and persist only after the gesture has ended.
+  appearance.setInterfaceScale(interfaceScale.value)
+}
+
+function cancelInterfaceScale(): void {
+  scaleEditing = false
+  interfaceScale.value = appearance.interfaceScale
+}
+
+function cancelScalePointer(): void {
+  // MIUIX emits update/change-end from its pointercancel handler as well.
+  // Ignore those emissions while still allowing its capture cleanup to run.
+  scalePointerCancelled = true
+  cancelInterfaceScale()
+}
+
+function onScaleKeydown(event: KeyboardEvent): void {
+  if (event.altKey || event.ctrlKey || event.metaKey) return
+  scalePointerCancelled = false
+  let value = interfaceScale.value
+  switch (event.key) {
+    case 'ArrowLeft': case 'ArrowDown': value -= 5; break
+    case 'ArrowRight': case 'ArrowUp': value += 5; break
+    case 'Home': value = 80; break
+    case 'End': value = 110; break
+    case 'Escape': cancelInterfaceScale(); event.preventDefault(); return
+    default: return
+  }
+  event.preventDefault()
+  setInterfaceScale(value)
+}
+
+watch(showScaleSlider, open => { if (!open) cancelInterfaceScale() })
+
+const unsubscribeAppearance = appearance.onChange(syncAppearanceState)
+onBeforeUnmount(() => {
+  languageRenderGeneration++
+  cancelInterfaceScale()
+  unsubscribeAppearance()
+})
 </script>
 
 <template>
@@ -263,7 +322,7 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
             <div class="settings-divider"><MiuixDivider /></div>
 
             <div class="settings-dropdown">
-              <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Tune" :size="22" /></span>
+              <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Photos" :size="22" /></span>
               <MiuixSpinnerPreference
                 :model-value="accentIndex"
                 :title="translate('settings_color', 'Accent color')"
@@ -275,7 +334,7 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
             <div class="settings-divider"><MiuixDivider /></div>
 
             <div class="settings-dropdown">
-              <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Tune" :size="22" /></span>
+              <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Layers" :size="22" /></span>
               <MiuixDropdownPreference
                 :model-value="paletteStyleIndex"
                 :title="translate('settings_color_style', 'Color style')"
@@ -287,7 +346,7 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
             <div class="settings-divider"><MiuixDivider /></div>
 
             <div class="settings-dropdown">
-              <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Tune" :size="22" /></span>
+              <span class="settings-preference-icon" aria-hidden="true"><MiuixIcon :icon="Tasks" :size="22" /></span>
               <MiuixDropdownPreference
                 :model-value="colorSpecIndex"
                 :title="translate('settings_color_spec', 'Color standard')"
@@ -421,6 +480,12 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
                 :key-points="[80, 90, 100, 110]"
                 :aria-label="translate('settings_interface_scale', 'Interface scale')"
                 @update:model-value="setInterfaceScale"
+                @change-end="commitInterfaceScale"
+                @pointerdown.capture="scalePointerCancelled = false"
+                @pointercancel.capture="cancelScalePointer"
+                @keydown="onScaleKeydown"
+                @keyup="commitInterfaceScale"
+                @blur="commitInterfaceScale"
               />
             </template>
           </MiuixArrowPreference>
@@ -443,7 +508,7 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
       <div class="language-sheet">
         <MiuixCard class="language-sheet__list" press-feedback="none">
           <MiuixRadioButtonPreference
-            v-for="(item, index) in languageItems"
+            v-for="(item, index) in languageItems.slice(0, visibleLanguageCount)"
             :key="languageCodes[index]"
             :model-value="languageIndex === index"
             :title="item"
@@ -540,8 +605,10 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
 }
 
 .language-sheet {
-  max-height: min(62vh, 560px);
-  max-height: min(62dvh, 560px);
+  /* Reserve the final viewport while the remaining rows mount after paint. */
+  height: min(62vh, 560px);
+  height: min(62dvh, 560px);
+  border-radius: var(--m-radius-md);
   overflow: auto;
   overscroll-behavior-y: contain;
   padding-bottom: 12px;

@@ -27,9 +27,12 @@ pub mod att_mgr;
 pub mod config;
 pub mod consts;
 pub mod global;
+pub mod gms_cache;
 pub mod keybox;
 pub mod keymaster;
 pub mod keymint;
+pub mod local_rkp;
+pub mod local_rkp_artifacts;
 pub mod logging;
 pub mod macros;
 pub mod mirror_keybox;
@@ -38,6 +41,8 @@ pub mod pif_spoof;
 pub mod plat;
 pub mod proto;
 pub mod r1_report;
+pub mod rkp_repair;
+pub mod rkp_v1_bridge;
 pub mod security_patch;
 pub mod selinux;
 pub mod soter_beta;
@@ -662,6 +667,9 @@ fn handle_webui_diagnostics_command() -> Option<Result<String, String>> {
                     "--webui-get-diagnostics does not accept arguments".to_string()
                 ));
             }
+            // This short-lived command needs Binder but never forks the
+            // privileged helper. The daemon initializes Binder after its fork.
+            let _ = rsbinder::ProcessState::init_default();
             Some(Ok(webui_diagnostics()))
         }
         "--webui-get-keybox-inspector" => {
@@ -811,7 +819,7 @@ fn handle_webui_soter_hal_command(
                 Ok(config) => config,
                 Err(error) => return Some(Err(format!("{error:#}"))),
             };
-            if config.enabled {
+            if config.enabled || config.app_enabled {
                 if let Err(error) = ensure_soter_features_are_exclusive(
                     true,
                     soter_beta::is_enabled(),
@@ -827,6 +835,19 @@ fn handle_webui_soter_hal_command(
             Some(
                 soter_hal::save(config)
                     .map(|()| "soter_hal_saved".to_string())
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        "--webui-set-soter-app-target-base64" => {
+            let Some(payload) = args.next() else {
+                return Some(Err("Soter app selection requires one encoded change".into()));
+            };
+            if args.next().is_some() {
+                return Some(Err("Soter app selection accepts only one change".into()));
+            }
+            Some(
+                soter_hal::AppTargetChange::parse_base64(&payload)
+                    .and_then(soter_hal::save_app_target)
                     .map_err(|error| format!("{error:#}")),
             )
         }
@@ -1147,6 +1168,33 @@ fn handle_webui_cloud_command(
     }
 }
 
+fn handle_webui_maintenance_command(
+    mut args: impl Iterator<Item = String>,
+) -> Option<Result<String, String>> {
+    match args.next()?.as_str() {
+        "--webui-clear-gms-cache" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-clear-gms-cache does not accept arguments".into()
+                ));
+            }
+            Some(gms_cache::clear().map_err(|error| format!("{error:#}")))
+        }
+        "--webui-repair-rkp" => {
+            if args.next().as_deref() != Some("--confirm-persistent-write") || args.next().is_some()
+            {
+                return Some(Err("RKP repair requires --confirm-persistent-write; the vendor tool can permanently modify persist/TEE data".into()));
+            }
+            Some(
+                rkp_repair::run()
+                    .map(|()| "rkp_tool_completed".into())
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        _ => None,
+    }
+}
+
 fn handle_r1_command() -> Option<Result<String, String>> {
     let mut args = std::env::args();
     let _program = args.next();
@@ -1276,14 +1324,54 @@ fn handle_webui_wallpaper_command() -> Option<Result<String, String>> {
     }
 }
 
+fn handle_local_rkp_command(
+    mut args: impl Iterator<Item = String>,
+) -> Option<Result<String, String>> {
+    let result = match args.next()?.as_str() {
+        "--webui-rkp-issue" => {
+            if args.next().as_deref() != Some("--confirm-issuance") {
+                return Some(Err("RKP issuance requires --confirm-issuance".into()));
+            }
+            let protocol = args.next().unwrap_or_else(|| "auto".into());
+            if args.next().is_some() {
+                return Some(Err("RKP issuance accepts only one optional protocol".into()));
+            }
+            local_rkp::Protocol::parse(&protocol).and_then(local_rkp::issue)
+        }
+        "--webui-rkp-list" => {
+            if args.next().is_some() {
+                return Some(Err("RKP list does not accept arguments".into()));
+            }
+            local_rkp_artifacts::list_json()
+        }
+        "--webui-rkp-import" => {
+            let Some(id) = args.next() else {
+                return Some(Err("RKP import requires an artifact ID".into()));
+            };
+            if args.next().as_deref() != Some("--confirm-replace") || args.next().is_some() {
+                return Some(Err("RKP import requires --confirm-replace".into()));
+            }
+            local_rkp_artifacts::import(&id).map(|()| "rkp_imported".into())
+        }
+        "--rkp-native-worker" => {
+            let Some(directory) = args.next() else {
+                return Some(Err("RKP worker requires its exchange directory".into()));
+            };
+            if args.next().is_some() {
+                return Some(Err("RKP worker accepts one directory".into()));
+            }
+            local_rkp::worker(&directory).map(|()| String::new())
+        }
+        _ => return None,
+    };
+    Some(result.map_err(|error| format!("{error:#}")))
+}
+
 fn main() {
-    // WebUI diagnostics query the registered Binder services before entering
-    // the long-running KeyMint server path. Initialize the Binder process
-    // state first so standalone WebUI bridge invocations can safely perform
-    // those read-only queries.
-    let _ = rsbinder::ProcessState::init_default();
     if let Some(result) = handle_webui_diagnostics_command()
         .or_else(|| handle_webui_app_patch_command(std::env::args().skip(1)))
+        .or_else(|| handle_local_rkp_command(std::env::args().skip(1)))
+        .or_else(|| handle_webui_maintenance_command(std::env::args().skip(1)))
     {
         match result {
             Ok(output) => println!("{output}"),
@@ -1572,6 +1660,9 @@ mod tests {
             vec!["--webui-set-soter-hal-base64", "not-base64"],
             vec!["--webui-set-soter-hal-base64", "/w=="],
             vec!["--webui-set-soter-hal-base64", "e30="],
+            vec!["--webui-set-soter-app-target-base64"],
+            vec!["--webui-set-soter-app-target-base64", "e30="],
+            vec!["--webui-set-soter-app-target-base64", "bad", "extra"],
         ] {
             assert!(
                 handle_webui_soter_hal_command(arguments.into_iter().map(str::to_string))
@@ -1579,6 +1670,46 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn maintenance_requires_exact_arguments_before_any_side_effect() {
+        for arguments in [
+            vec!["--webui-clear-gms-cache", "extra"],
+            vec!["--webui-repair-rkp"],
+            vec!["--webui-repair-rkp", "true"],
+            vec!["--webui-repair-rkp", "--confirm-persistent-write", "extra"],
+        ] {
+            assert!(
+                handle_webui_maintenance_command(arguments.into_iter().map(str::to_string))
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        assert!(handle_webui_maintenance_command(["unknown".to_string()].into_iter()).is_none());
+    }
+
+    #[test]
+    fn local_rkp_requires_confirmation_and_exact_arguments() {
+        for args in [
+            vec!["--webui-rkp-issue"],
+            vec!["--webui-rkp-issue", "auto"],
+            vec!["--webui-rkp-issue", "--confirm-issuance", "invalid"],
+            vec!["--webui-rkp-issue", "--confirm-issuance", "auto", "extra"],
+            vec!["--webui-rkp-list", "extra"],
+            vec!["--webui-rkp-import"],
+            vec!["--webui-rkp-import", "a"],
+            vec!["--webui-rkp-import", "a", "--confirm-replace", "extra"],
+            vec!["--rkp-native-worker"],
+            vec!["--rkp-native-worker", "/tmp", "extra"],
+        ] {
+            assert!(
+                handle_local_rkp_command(args.into_iter().map(str::to_owned))
+                    .unwrap()
+                    .is_err()
+            );
+        }
+        assert!(handle_local_rkp_command(["unknown".into()].into_iter()).is_none());
     }
 
     #[test]

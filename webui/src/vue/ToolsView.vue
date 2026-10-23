@@ -7,7 +7,7 @@ import {
   MiuixSmallTitle,
   MiuixTopAppBar,
 } from 'miuix-vue'
-import { AddCircle, Replace, Reset, Tune, Update } from 'miuix-vue/icons'
+import { AddCircle, BankCards, Lock, Replace, Reset, Update } from 'miuix-vue/icons'
 import { i18n } from '../i18n'
 
 export type ToolEvent =
@@ -19,6 +19,9 @@ export type ToolEvent =
   | 'openSoterBeta'
   | 'openSoterHal'
   | 'spoofPif'
+  | 'clearGmsCache'
+  | 'repairRkp'
+  | 'issueRkp'
 
 type BusyPatch = 'sync' | 'restore' | null
 type BusyKeybox = 'install' | 'mirror' | null
@@ -26,6 +29,8 @@ type BusyKeybox = 'install' | 'mirror' | null
 const props = defineProps<{
   securityPatchBusy: BusyPatch
   keyboxBusy: BusyKeybox
+  maintenanceBusy: 'gms' | 'rkp' | null
+  rkpIssuanceBusy: boolean
 }>()
 
 const emit = defineEmits<{
@@ -37,6 +42,9 @@ const emit = defineEmits<{
   openSoterBeta: []
   openSoterHal: []
   spoofPif: []
+  clearGmsCache: []
+  repairRkp: []
+  issueRkp: []
 }>()
 
 function runTool(event: ToolEvent): void {
@@ -49,6 +57,9 @@ function runTool(event: ToolEvent): void {
     case 'openSoterBeta': emit('openSoterBeta'); break
     case 'openSoterHal': emit('openSoterHal'); break
     case 'spoofPif': emit('spoofPif'); break
+    case 'clearGmsCache': emit('clearGmsCache'); break
+    case 'repairRkp': emit('repairRkp'); break
+    case 'issueRkp': emit('issueRkp'); break
   }
 }
 
@@ -84,15 +95,27 @@ const groups = [
       },
       {
         event: 'openSoterBeta' as const,
-        icon: Tune,
-        title: tr('tools_soter_beta', 'Tencent Soter compatibility (Beta)'),
+        icon: Lock,
+        title: tr('tools_soter_beta', 'Fix Tencent Soter Server (Testing)'),
         summary: tr('tools_soter_beta_desc', 'Experimental compatibility for Tencent SoterServer. Requires Zygisk Next.'),
       },
       {
         event: 'openSoterHal' as const,
-        icon: Tune,
+        icon: BankCards,
         title: tr('tools_wechat_soter', 'Fix WeChat payment fingerprint'),
         summary: tr('tools_wechat_soter_desc', 'Configure the Qualcomm Soter service.'),
+      },
+      {
+        event: 'repairRkp' as const,
+        icon: Reset,
+        title: tr('tools_repair_rkp', 'Fix RKP'),
+        summary: tr('tools_repair_rkp_desc', 'Run the vendor provisioning tool after confirming the persistent-write risk.'),
+      },
+      {
+        event: 'issueRkp' as const,
+        icon: BankCards,
+        title: tr('tools_issue_rkp', 'Issue local RKP Keybox'),
+        summary: tr('tools_issue_rkp_desc', 'Use this device\'s RKP service to request a certificate for a locally generated key.'),
       },
     ],
   },
@@ -100,9 +123,14 @@ const groups = [
     title: tr('tools_fingerprint_spoofing', 'Fingerprint spoofing'),
     items: [{
       event: 'spoofPif' as const,
-      icon: Tune,
+      icon: null,
       title: tr('menu_spoof_pif_fingerprint', 'Spoof PIF fingerprint'),
       summary: tr('tools_pif_desc', 'Fetch and apply a Pixel fingerprint for Play Integrity.'),
+    }, {
+      event: 'clearGmsCache' as const,
+      icon: Reset,
+      title: tr('tools_clear_gms_cache', 'Clear GMS cache'),
+      summary: tr('tools_clear_gms_cache_desc', 'Clear Play services and Play Store caches, keep app data, then stop the specified processes.'),
     }],
   },
   {
@@ -125,6 +153,8 @@ const groups = [
 ]
 
 function isBusy(event: ToolEvent): boolean {
+  if (event === 'clearGmsCache' || event === 'repairRkp') return props.maintenanceBusy !== null
+  if (event === 'issueRkp') return props.rkpIssuanceBusy
   if (event === 'syncSecurityPatch') return props.securityPatchBusy !== null
   if (event === 'restoreSecurityPatch') return props.securityPatchBusy !== null
   if (event === 'installKeybox') return props.keyboxBusy !== null
@@ -137,6 +167,9 @@ function isActiveBusy(event: ToolEvent): boolean {
   if (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore') return true
   if (event === 'installKeybox' && props.keyboxBusy === 'install') return true
   if (event === 'refreshMirrorKeybox' && props.keyboxBusy === 'mirror') return true
+  if (event === 'clearGmsCache' && props.maintenanceBusy === 'gms') return true
+  if (event === 'repairRkp' && props.maintenanceBusy === 'rkp') return true
+  if (event === 'issueRkp' && props.rkpIssuanceBusy) return true
   return false
 }
 </script>
@@ -165,7 +198,12 @@ function isActiveBusy(event: ToolEvent): boolean {
                 :size="22"
                 :stroke-width="2.5"
               />
-              <MiuixIcon v-else :icon="item.icon" :size="23" />
+              <MiuixIcon v-else-if="item.icon" :icon="item.icon" :size="23" />
+              <svg v-else width="23" height="23" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 11.5a9 9 0 0 1 18 0v2M3 15c-.1 1.5-.4 2.8-.9 4M5.5 17c.5-1.6.5-3.3.5-5.5a6 6 0 0 1 12 0c0 3.3-.5 6-1.7 8.5M6.5 20c1.7-2.5 2.5-5.4 2.5-8.5a3 3 0 0 1 6 0c0 3.8-.7 7-2.2 10M9.7 21.5c1.5-3 2.3-6.3 2.3-10M20.5 17c-.2 1-.5 2-1 3" />
+              </svg>
             </span>
           </template>
         </MiuixArrowPreference>

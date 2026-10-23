@@ -17,6 +17,12 @@ pub struct V4;
 impl Sealed for V4 {}
 
 impl super::ZygiskApi<'_, V4> {
+    /// Keep an owned descriptor open across app specialization.
+    #[inline(always)]
+    pub fn exempt_fd(&self, fd: RawFd) -> bool {
+        (unsafe { self.dispatch() }.exempt_fd_fn)(fd)
+    }
+
     #[inline(always)]
     pub fn with_companion<R>(
         &mut self,
@@ -50,15 +56,6 @@ impl super::ZygiskApi<'_, V4> {
             -1 => Err(ZygiskError::ConnectCompanionError),
             fd => Ok(unsafe { OwnedFd::from_raw_fd(fd) }),
         }
-    }
-
-    /// Marks a descriptor as exempt from Zygisk's descriptor sanitization so it
-    /// survives app specialization and the loader's cleanup between callbacks.
-    #[inline(always)]
-    pub fn exempt_fd(&mut self, fd: RawFd) -> bool {
-        let api_dispatch = unsafe { self.dispatch() };
-
-        (api_dispatch.exempt_fd_fn)(fd)
     }
 
     #[inline(always)]

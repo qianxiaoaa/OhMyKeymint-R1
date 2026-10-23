@@ -139,7 +139,7 @@ pub(crate) fn install(api: &mut ZygiskApi<'_, V4>) -> Result<(), String> {
     INSTALL
         .get_or_init(|| {
             if size_of::<usize>() != 8 {
-                return Err("Soter Beta requires a 64-bit process".to_string());
+                return Err("Soter hook requires a 64-bit process".to_string());
             }
             // Load libraries and register the PLT hook while Zygisk's API is
             // available. Do not construct/parcel a Binder object here:
@@ -156,10 +156,10 @@ pub(crate) fn install(api: &mut ZygiskApi<'_, V4>) -> Result<(), String> {
                 .join("\n");
             let targets = crate::parse_hook_targets(&binder_maps);
             if targets.len() != 1 {
-                return Err("Soter Beta requires one unambiguous libbinder mapping".to_string());
+                return Err("Soter hook requires one unambiguous libbinder mapping".to_string());
             }
             let original = crate::resolve_symbol_address(c"ioctl")
-                .ok_or_else(|| "Soter Beta cannot resolve the original ioctl".to_string())?;
+                .ok_or_else(|| "Soter hook cannot resolve the original ioctl".to_string())?;
             ORIGINAL_IOCTL.store(original, Ordering::Release);
             // Zygisk retains this address until PLT commit. Its lifetime also
             // covers a partially successful commit, so it is never freed.
@@ -177,10 +177,10 @@ pub(crate) fn install(api: &mut ZygiskApi<'_, V4>) -> Result<(), String> {
             if !backup.is_null() {
                 ORIGINAL_IOCTL.store((*backup).cast_mut().cast(), Ordering::Release);
             }
-            result.map_err(|error| format!("Soter Beta PLT commit failed: {error}"))?;
+            result.map_err(|error| format!("Soter hook PLT commit failed: {error}"))?;
             if backup.is_null() {
                 return Err(
-                    "libbinder does not import ioctl; Soter Beta stays inactive".to_string()
+                    "libbinder does not import ioctl; Soter hook stays inactive".to_string()
                 );
             }
             Ok((ndk, binder))
@@ -203,7 +203,7 @@ pub(crate) fn activate() {
                 "Soter Beta software test mode active; public fixture keys, no biometric authentication",
             );
         }
-        Err(error) => log(&format!("Soter Beta native handler unavailable: {error}")),
+        Err(error) => log(&format!("Soter native handler unavailable: {error}")),
     }
 }
 
@@ -339,7 +339,7 @@ fn symbol<T: Copy>(library: usize, name: &CStr) -> Result<T, String> {
     let symbol = unsafe { libc::dlsym(library as *mut c_void, name.as_ptr()) };
     if symbol.is_null() || size_of::<T>() != size_of::<*mut c_void>() {
         return Err(format!(
-            "Soter Beta native API unavailable: {}",
+            "Soter native API unavailable: {}",
             name.to_string_lossy()
         ));
     }
@@ -357,7 +357,7 @@ fn library(name: &CStr) -> Result<usize, String> {
             unsafe { CStr::from_ptr(error) }.to_string_lossy()
         };
         return Err(format!(
-            "Soter Beta cannot load {}: {detail}",
+            "Soter hook cannot load {}: {detail}",
             name.to_string_lossy()
         ));
     }
@@ -367,12 +367,12 @@ fn library(name: &CStr) -> Result<usize, String> {
 fn load_native(ndk: usize, binder: usize) -> Result<NativeStub, String> {
     let view_platform = symbol(ndk, c"_Z26AParcel_viewPlatformParcelPK7AParcel").ok();
     let device_api_address = crate::resolve_symbol_address(c"android_get_device_api_level")
-        .ok_or_else(|| "Soter Beta cannot identify the Android API level".to_string())?;
+        .ok_or_else(|| "Soter hook cannot identify the Android API level".to_string())?;
     let device_api: unsafe extern "C" fn() -> i32 =
         unsafe { std::mem::transmute(device_api_address) };
     let sdk = unsafe { device_api() };
     if sdk < 31 || (view_platform.is_none() && !matches!(sdk, 31..=33)) {
-        return Err("Soter Beta cannot access this Android version's native Parcel".to_string());
+        return Err("Soter hook cannot access this Android version's native Parcel".to_string());
     }
     let api = NativeApi {
         parcel_size: symbol(ndk, c"AParcel_getDataSize")?,
@@ -393,7 +393,7 @@ fn load_native(ndk: usize, binder: usize) -> Result<NativeStub, String> {
     let write_binder: WriteBinder = symbol(ndk, c"AParcel_writeStrongBinder")?;
     let class = unsafe { define(DESCRIPTOR.as_ptr(), on_create, on_destroy, on_transact) };
     if class.is_null() {
-        return Err("Soter Beta cannot define native Binder class".to_string());
+        return Err("Soter hook cannot define native Binder class".to_string());
     }
     // Android 13+ supports legacy Binder interfaces without enforcing a
     // particular header layout. Descriptor matching remains in our handler,
@@ -405,21 +405,20 @@ fn load_native(ndk: usize, binder: usize) -> Result<NativeStub, String> {
     }
     let stub = unsafe { new(class, ptr::null_mut()) };
     if stub.is_null() {
-        return Err("Soter Beta cannot allocate native Binder".to_string());
+        return Err("Soter hook cannot allocate native Binder".to_string());
     }
     let carrier = unsafe { create() };
     if carrier.is_null() {
         unsafe { dec_strong(stub) };
-        return Err("Soter Beta cannot allocate Binder carrier".to_string());
+        return Err("Soter hook cannot allocate Binder carrier".to_string());
     }
     let target = (|| {
         let status = unsafe { write_binder(carrier, stub) };
         if status != 0 {
-            return Err(format!("Soter Beta Binder carrier write failed: {status}"));
+            return Err(format!("Soter Binder carrier write failed: {status}"));
         }
         let bytes = unsafe { api.bytes(carrier, ptr::null(), true, Some(1))? };
-        parse_carrier(bytes)
-            .ok_or_else(|| "Soter Beta native Binder carrier is unsupported".to_string())
+        parse_carrier(bytes).ok_or_else(|| "Soter native Binder carrier is unsupported".to_string())
     })();
     unsafe { delete(carrier) };
     match target {
@@ -454,21 +453,21 @@ impl NativeApi {
         objects: Option<usize>,
     ) -> Result<&'a [u8], String> {
         if parcel.is_null() {
-            return Err("Soter Beta received a null Parcel".to_string());
+            return Err("Soter hook received a null Parcel".to_string());
         }
         let platform = if let Some(view) = self.view_platform {
             unsafe { view(parcel) }
         } else if self.legacy_layout {
             let legacy = unsafe { &*parcel.cast::<LegacyParcel>() };
             if legacy.binder != binder || legacy.owns_parcel != u8::from(owns) {
-                return Err("Soter Beta received an incompatible legacy Parcel".to_string());
+                return Err("Soter hook received an incompatible legacy Parcel".to_string());
             }
             legacy.parcel
         } else {
             ptr::null()
         };
         if platform.is_null() || !(platform as usize).is_multiple_of(align_of::<usize>()) {
-            return Err("Soter Beta received an invalid platform Parcel".to_string());
+            return Err("Soter hook received an invalid platform Parcel".to_string());
         }
         let size = unsafe { (self.platform_size)(platform) };
         if size > MAX_REQUEST_BYTES
@@ -477,7 +476,7 @@ impl NativeApi {
                 .is_some_and(|expected| unsafe { (self.platform_objects)(platform) != expected })
         {
             return Err(
-                "Soter Beta received an unsupported Parcel size or object count".to_string(),
+                "Soter hook received an unsupported Parcel size or object count".to_string(),
             );
         }
         if size == 0 {
@@ -485,7 +484,7 @@ impl NativeApi {
         }
         let data = unsafe { (self.platform_data)(platform) };
         if !valid_pointer_range(data as u64, size as u64) {
-            return Err("Soter Beta received an invalid Parcel buffer".to_string());
+            return Err("Soter hook received an invalid Parcel buffer".to_string());
         }
         Ok(unsafe { std::slice::from_raw_parts(data, size) })
     }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   MiuixButton,
   MiuixDialog,
@@ -8,6 +8,7 @@ import {
   MiuixSwitchPreference,
 } from 'miuix-vue'
 import { Cli, type SoterHalState } from '../cli'
+import { afterPaint } from '../app_list/app_list'
 import { i18n } from '../i18n'
 import { isDev } from '../utils/dev'
 
@@ -20,6 +21,7 @@ const emit = defineEmits<{
 const preview = isDev()
 const enabled = ref(false)
 const remoteEnabled = ref(false)
+const appEnabled = ref(false)
 const url = ref('')
 const token = ref('')
 const deviceId = ref('')
@@ -47,6 +49,8 @@ const current = computed<SoterHalState | null>(() => {
     device_id: deviceId.value,
     tls_insecure: tlsInsecure.value,
     uid_map: uidMap.value,
+    app_enabled: appEnabled.value,
+    app_targets: saved.value.app_targets,
   }
 })
 
@@ -62,9 +66,11 @@ const canApply = computed(() => {
           || parsed.username || parsed.password) return false
     } catch { return false }
   }
-  if (state.enabled && soterBetaEnabled.value) return false
+  if ((state.enabled || state.app_enabled) && soterBetaEnabled.value) return false
   return JSON.stringify(state) !== JSON.stringify(saved.value)
 })
+
+const softwareTakeoverEnabled = computed(() => enabled.value || appEnabled.value)
 
 async function load(): Promise<void> {
   if (!props.modelValue || busy.value) return
@@ -74,6 +80,8 @@ async function load(): Promise<void> {
   errorMessage.value = ''
   soterBetaEnabled.value = false
   try {
+    await afterPaint()
+    if (currentGeneration !== generation || !props.modelValue) return
     const [state, betaState] = preview
       ? [{
           enabled: false,
@@ -83,11 +91,14 @@ async function load(): Promise<void> {
           device_id: '',
           tls_insecure: false,
           uid_map: '',
+          app_enabled: false,
+          app_targets: [],
         }, { enabled: false }]
       : await Promise.all([props.cli.getSoterHal(), props.cli.getSoterBeta()])
     if (currentGeneration !== generation || !props.modelValue) return
     enabled.value = state.enabled
     remoteEnabled.value = state.remote_enabled
+    appEnabled.value = state.app_enabled
     url.value = state.url
     token.value = state.token
     deviceId.value = state.device_id
@@ -106,7 +117,9 @@ async function load(): Promise<void> {
 watch(() => props.modelValue, open => {
   if (open) void load()
   else generation++
-})
+}, { immediate: true })
+
+onBeforeUnmount(() => { generation++ })
 
 function requestClose(): boolean {
   if (busy.value) return false
@@ -116,15 +129,26 @@ function requestClose(): boolean {
 
 defineExpose({ requestClose, busy })
 
+function setSoftwareTakeoverEnabled(value: boolean): void {
+  // Keep both persisted bits in lockstep: this is one user-facing mode and
+  // one watchdog transition, not two independently toggled operations.
+  enabled.value = value
+  appEnabled.value = value
+}
+
 async function apply(): Promise<void> {
   const state = current.value
   if (!canApply.value || !state) return
+  const restoresStockInBackground = saved.value?.enabled === true
+    && !state.enabled && !state.app_enabled
   busy.value = true
   errorMessage.value = ''
   try {
-    await props.cli.setSoterHal(state)
-    saved.value = { ...state }
-    emit('notify', tr('soter_hal_saved', 'Soter HAL configuration saved'))
+    await afterPaint()
+    saved.value = await props.cli.setSoterHal(state)
+    emit('notify', restoresStockInBackground
+      ? tr('soter_hal_saved_background', 'Settings saved; stock Soter HAL restoration continues in the background.')
+      : tr('soter_hal_saved', 'Soter HAL configuration saved'))
     emit('update:modelValue', false)
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
@@ -143,9 +167,8 @@ async function apply(): Promise<void> {
     @update:model-value="value => { if (!value) requestClose() }"
   >
     <div class="soter-hal-dialog" :aria-busy="busy || status === 'loading'">
-      <p>{{ tr('soter_hal_desc', 'Configure the Qualcomm Soter service.') }}</p>
       <p v-if="soterBetaEnabled" class="soter-hal-dialog__error">
-        {{ tr('soter_hal_exclusive', 'Disable Tencent Soter Beta before enabling the Qualcomm Soter service.') }}
+        {{ tr('soter_hal_exclusive', 'Disable Tencent Soter Server (Testing) before enabling the Qualcomm Soter service.') }}
       </p>
       <div v-if="status === 'loading'" class="soter-hal-dialog__loading" role="status">
         <MiuixProgressIndicator type="circular" :size="28" />
@@ -156,12 +179,13 @@ async function apply(): Promise<void> {
           {{ tr('soter_hal_warning', 'This feature may cause probabilistic bans of Douyin accounts and other unknown issues. Please consider carefully before enabling it.') }}
         </p>
         <MiuixSwitchPreference
-          v-model="enabled"
-          :title="tr('soter_hal_enabled', 'Enable software TA')"
+          :model-value="softwareTakeoverEnabled"
+          :title="tr('soter_hal_enabled', 'Enable remote Soter service')"
           :disabled="busy"
+          @update:model-value="setSoftwareTakeoverEnabled"
         />
         <p class="soter-hal-dialog__hint">
-          {{ tr('soter_hal_enabled_desc', 'The software TA takes over the stock Soter HAL. With the relay off, it uses its local ledger. Turning the software TA off restores the stock HAL.') }}
+          {{ tr('soter_hal_enabled_desc', 'The software TA takes over the stock Soter HAL. Remote forwarding remains limited to apps individually enabled in Add package names; other apps use the software TA locally. Turning this off restores the stock Soter HAL.') }}
         </p>
         <MiuixSwitchPreference
           v-model="remoteEnabled"
@@ -169,7 +193,10 @@ async function apply(): Promise<void> {
           :disabled="busy"
         />
         <p class="soter-hal-dialog__hint">
-          {{ tr('soter_hal_remote_desc', 'When the software TA is on, this switch uses the configured remote relay instead of the local ledger. Relay failures never fall back to local keys. Relay settings can be saved while the software TA is off.') }}
+          {{ tr('soter_hal_remote_desc', 'Allows SOTER requests to use the saved relay. In per-app mode, both this switch and the app-specific switch must be on.') }}
+        </p>
+        <p v-if="saved?.app_targets.length" class="soter-hal-dialog__hint">
+          {{ tr('soter_app_count', 'Apps with remote SOTER enabled') }}: {{ saved?.app_targets.length ?? 0 }}
         </p>
         <MiuixInput
           v-model="url"
@@ -218,10 +245,10 @@ async function apply(): Promise<void> {
 </template>
 
 <style scoped>
-.soter-hal-dialog { display: flex; flex-direction: column; gap: 14px; max-height: min(72vh, 620px); overflow-y: auto; }
+.soter-hal-dialog { display: flex; flex-direction: column; gap: 14px; height: min(72vh, 620px); overflow-y: auto; }
 .soter-hal-dialog p { margin: 0; color: var(--m-color-on-surface-variant-summary); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
 .soter-hal-dialog__warning { color: var(--m-color-on-surface) !important; }
-.soter-hal-dialog__loading { display: flex; min-height: 64px; align-items: center; justify-content: center; gap: 12px; color: var(--m-color-on-surface-variant-summary); }
+.soter-hal-dialog__loading { display: flex; flex: 1; min-height: 64px; align-items: center; justify-content: center; gap: 12px; color: var(--m-color-on-surface-variant-summary); }
 .soter-hal-dialog__error { color: var(--m-color-error) !important; }
 .soter-hal-dialog__hint { font-size: 13px !important; }
 .soter-hal-dialog__actions { display: flex; gap: 12px; }

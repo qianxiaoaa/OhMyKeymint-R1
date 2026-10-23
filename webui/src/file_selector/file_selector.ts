@@ -1,4 +1,5 @@
 import { exec } from 'kernelsu-alt'
+import { afterPaint } from '../app_list/app_list'
 import { MAX_KEYBOX_XML_BYTES, MAX_WALLPAPER_BYTES } from '../cli'
 import { i18n } from '../i18n'
 
@@ -499,6 +500,8 @@ export class FileSelector {
     this.#entries = []
     this.#emit()
     try {
+      await afterPaint()
+      if (this.#pending?.token !== token || request !== this.#request) return false
       const result = await exec(buildListCommand(path, this.#extensions))
       if (this.#pending?.token !== token || request !== this.#request) return false
       if (result.errno !== 0) throw commandError(result.errno, result.stderr)
@@ -508,7 +511,7 @@ export class FileSelector {
       this.#emit()
       return true
     } catch (error) {
-      if (this.#pending?.token !== token) return false
+      if (this.#pending?.token !== token || request !== this.#request) return false
       console.error('Unable to list shared-storage files:', error)
       this.#loading = false
       this.#status = i18n.t('replace_keybox_storage_error')
@@ -524,6 +527,8 @@ export class FileSelector {
     this.#status = i18n.t('replace_keybox_storage_loading')
     this.#emit()
     try {
+      await afterPaint()
+      if (this.#pending?.token !== token || request !== this.#request) return
       const result = await exec(buildReadCommand(path, this.#maxBytes))
       if (this.#pending?.token !== token || request !== this.#request) return
       if (result.errno !== 0) {
@@ -532,7 +537,7 @@ export class FileSelector {
       }
       this.#finish({ kind: 'contents', name, contents: decodeBase64(result.stdout, this.#maxBytes) })
     } catch (error) {
-      if (this.#pending?.token !== token) return
+      if (this.#pending?.token !== token || request !== this.#request) return
       console.error('Unable to read shared-storage file:', error)
       this.#loading = false
       this.#status = error instanceof Error ? error.message : i18n.t('replace_keybox_storage_error')

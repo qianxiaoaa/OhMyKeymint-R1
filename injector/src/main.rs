@@ -8,6 +8,7 @@ use nix::unistd::Pid;
 
 use crate::android::hardware::security::keymint::SecurityLevel::SecurityLevel;
 
+mod auto_targets;
 pub mod config;
 pub mod filter;
 pub mod forward;
@@ -18,6 +19,7 @@ pub mod ipc;
 pub mod legacy;
 pub mod logging;
 pub mod parcel;
+mod soter_watch;
 pub mod sys;
 pub mod tracker;
 pub mod utils;
@@ -104,6 +106,56 @@ fn handle_webui_config_command() -> Option<Result<String, String>> {
     let command = args.next()?;
 
     match command.as_str() {
+        "--webui-get-auto-targets" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-auto-targets does not accept arguments".into()
+                ));
+            }
+            Some(
+                auto_targets::status()
+                    .and_then(|state| Ok(serde_json::to_string(&state)?))
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        "--webui-set-auto-targets" => {
+            let enabled = match args.next().as_deref() {
+                Some("0") => false,
+                Some("1") => true,
+                _ => return Some(Err("--webui-set-auto-targets requires 0 or 1".into())),
+            };
+            if args.next().is_some() {
+                return Some(Err("--webui-set-auto-targets accepts one argument".into()));
+            }
+            Some(
+                auto_targets::set_enabled(enabled)
+                    .and_then(|state| Ok(serde_json::to_string(&state)?))
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        "--webui-update-scoop" => {
+            let Some(encoded) = args.next() else {
+                return Some(Err(
+                    "--webui-update-scoop requires a base64 JSON delta".into()
+                ));
+            };
+            if args.next().is_some() || encoded.len() > 4 * 1024 * 1024 {
+                return Some(Err("invalid scoop delta arguments".into()));
+            }
+            Some(
+                BASE64_STANDARD
+                    .decode(encoded)
+                    .map_err(|error| error.to_string())
+                    .and_then(|payload| {
+                        serde_json::from_slice::<config::ScoopDelta>(&payload)
+                            .map_err(|error| error.to_string())
+                    })
+                    .and_then(config::update_scoop_for_webui)
+                    .and_then(|targets| {
+                        serde_json::to_string(&targets).map_err(|error| error.to_string())
+                    }),
+            )
+        }
         "--webui-get-scoop" => {
             if args.next().is_some() {
                 return Some(Err(
@@ -141,6 +193,30 @@ fn handle_webui_config_command() -> Option<Result<String, String>> {
 }
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--soter-watch") {
+        if std::env::args().count() != 2 {
+            std::process::exit(2);
+        }
+        logging::init_logger_fallback(LevelFilter::Info);
+        if let Err(error) = soter_watch::run() {
+            log::error!(target: "omk_soter_remote", "event=soter path=native_remote stage=watch state=failed error={error:#}");
+            eprintln!("native SOTER watcher failed: {error:#}");
+            std::process::exit(2);
+        }
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("--auto-targets-watch") {
+        if std::env::args().count() != 2 {
+            eprintln!("--auto-targets-watch does not accept arguments");
+            std::process::exit(2);
+        }
+        logging::init_logger_fallback(LevelFilter::Warn);
+        if let Err(error) = auto_targets::run_watcher() {
+            eprintln!("automatic app selection watcher failed: {error:#}");
+            std::process::exit(2);
+        }
+        return;
+    }
     if let Some(result) = handle_webui_tee_status_command() {
         match result {
             Ok(output) => println!("{output}"),
@@ -253,6 +329,24 @@ pub extern "C" fn entry(handle: *const c_void) -> bool {
         return false;
     }
     true
+}
+
+/// # Safety
+/// Called only by the root native injector with two newly transferred, owned
+/// socketpair descriptors. They must be distinct and valid in this process.
+#[no_mangle]
+pub unsafe extern "C" fn soter_entry(_handle: *const c_void, auth: i32, calls: i32) -> bool {
+    use std::os::{fd::FromRawFd, unix::net::UnixStream};
+    logging::init_logger_fallback(LevelFilter::Info);
+    let auth = UnixStream::from_raw_fd(auth);
+    let calls = UnixStream::from_raw_fd(calls);
+    match hook::soter::initialize(auth, calls) {
+        Ok(()) => true,
+        Err(error) => {
+            error!("native SOTER entry failed: {error:#}");
+            false
+        }
+    }
 }
 
 #[cfg(test)]

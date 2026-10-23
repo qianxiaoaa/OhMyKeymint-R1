@@ -20,7 +20,11 @@ const MAX_SOTER_HAL_JSON_BYTES = 16 * 1024
 const MAX_DIAGNOSTICS_JSON_BYTES = 8 * 1024
 const MAX_CLOUD_JSON_BYTES = 8 * 1024
 const MAX_KEYBOX_INSPECTOR_JSON_BYTES = 32 * 1024
+const MAX_RKP_ISSUED_JSON_BYTES = 512 * 1024
 const MAX_APP_PATCH_LEVELS_JSON_BYTES = 64 * 1024
+const DEFAULT_SOTER_RELAY_URL = 'http://110.40.170.96:10886'
+const DEFAULT_SOTER_RELAY_DEVICE_ID = 'device-b-c3f204aa'
+const DEFAULT_SOTER_RELAY_TOKEN = 'aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd'
 const MAX_ROOT_OF_TRUST_JSON_BYTES = 4 * 1024
 const MAX_WALLPAPER_JSON_BYTES = 4 * 1024
 const WALLPAPER_CHUNK_BYTES = 48 * 1024
@@ -113,6 +117,8 @@ export interface SoterHalState {
   device_id: string
   tls_insecure: boolean
   uid_map: string
+  app_enabled: boolean
+  app_targets: string[]
 }
 export type PlayIntegrityStatus = 'not_checked'
 export type KeyboxRevocationStatus =
@@ -157,6 +163,14 @@ export interface KeyboxInspector {
   rsa: KeyboxChainInspector | null
   ec: KeyboxChainInspector | null
 }
+
+export interface RkpIssuedArtifact {
+  id: string
+  created_at: number
+  chain_subjects: string[]
+}
+
+export type RkpProtocol = 'auto' | 'v1' | 'v2' | 'v1-native'
 
 export interface AppPatchLevels {
   os_patchlevel: string | null
@@ -267,6 +281,64 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
   const keys = Object.keys(value)
   return keys.length === allowed.length && keys.every((key, index) => key === allowed[index])
+}
+
+function parseRkpIssuedArtifact(value: unknown): RkpIssuedArtifact {
+  if (!isRecord(value)
+      || !hasOnlyKeys(value, ['id', 'created_at', 'chain_subjects'])
+      || typeof value.id !== 'string'
+      || !/^[a-f0-9]{32}$/.test(value.id)
+      || typeof value.created_at !== 'number'
+      || !Number.isSafeInteger(value.created_at)
+      || value.created_at < 0 || value.created_at > 253402300799
+      || !Array.isArray(value.chain_subjects)
+      || value.chain_subjects.length < 1 || value.chain_subjects.length > 8
+      || !value.chain_subjects.every(subject => typeof subject === 'string'
+        && subject.length > 0 && subject.length <= 512
+        && !/[\u0000-\u001f\u007f]/.test(subject))) {
+    throw new Error('OMK returned invalid issued RKP metadata')
+  }
+  return {
+    id: value.id,
+    created_at: value.created_at,
+    chain_subjects: value.chain_subjects as string[],
+  }
+}
+
+function parseRkpIssuedList(output: string): RkpIssuedArtifact[] {
+  const parsed = parseCanonicalJson(output, 'issued RKP list')
+  if (!isRecord(parsed) || !hasOnlyKeys(parsed, ['artifacts'])
+      || !Array.isArray(parsed.artifacts) || parsed.artifacts.length > 16) {
+    throw new Error('OMK returned invalid issued RKP list')
+  }
+  const artifacts = parsed.artifacts.map(parseRkpIssuedArtifact)
+  if (new Set(artifacts.map(artifact => artifact.id)).size !== artifacts.length) {
+    throw new Error('OMK returned duplicate issued RKP items')
+  }
+  return artifacts
+}
+
+function parseSoterHalState(output: string): SoterHalState {
+  const parsed = parseCanonicalJson(output, 'Soter HAL state')
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, ['enabled', 'remote_enabled', 'url', 'token', 'device_id', 'tls_insecure', 'uid_map', 'app_enabled', 'app_targets'])
+      || typeof parsed.enabled !== 'boolean'
+      || typeof parsed.remote_enabled !== 'boolean'
+      || typeof parsed.url !== 'string'
+      || typeof parsed.token !== 'string'
+      || typeof parsed.device_id !== 'string'
+      || typeof parsed.tls_insecure !== 'boolean'
+      || typeof parsed.uid_map !== 'string'
+      || typeof parsed.app_enabled !== 'boolean'
+      || !Array.isArray(parsed.app_targets)
+      || !parsed.app_targets.every(value => {
+        const target = parseScoopTarget(value)
+        return target?.kind === 'package-user' && target.target === value
+      })
+      || new Set(parsed.app_targets).size !== parsed.app_targets.length) {
+    throw new Error('OMK returned invalid Soter HAL state')
+  }
+  return parsed as unknown as SoterHalState
 }
 
 function isSafeText(value: unknown, maxLength: number): value is string {
@@ -709,6 +781,52 @@ function parseSupportedAbi(output: string): SupportedAbi | null {
 export class Cli {
   #helperPaths: Promise<HelperPaths> | null = null
 
+  async clearGmsCache(): Promise<void> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-clear-gms-cache'], 65536)
+    const report: unknown = JSON.parse(output)
+    if (!isRecord(report) || !Array.isArray(report.errors)
+        || !report.errors.every((error: unknown) => typeof error === 'string')
+        || !Array.isArray(report.processes) || typeof report.cleared_cache_dirs !== 'number') {
+      throw new Error('OMK returned an unexpected cache cleanup result')
+    }
+    if (report.errors.length) throw new Error(report.errors.join('; '))
+  }
+
+  async repairRkp(): Promise<void> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-repair-rkp', '--confirm-persistent-write'], 256)
+    if (output !== 'rkp_tool_completed') throw new Error('OMK returned an unexpected RKP tool result')
+  }
+
+  async issueRkpKeybox(protocol: RkpProtocol = 'auto'): Promise<RkpIssuedArtifact> {
+    if (!['auto', 'v1', 'v2', 'v1-native'].includes(protocol)) throw new Error('Invalid RKP protocol')
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-rkp-issue', '--confirm-issuance', protocol],
+      MAX_RKP_ISSUED_JSON_BYTES,
+    )
+    return parseRkpIssuedArtifact(parseCanonicalJson(output, 'issued RKP metadata'))
+  }
+
+  async listIssuedRkpKeyboxes(): Promise<RkpIssuedArtifact[]> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-rkp-list'], MAX_RKP_ISSUED_JSON_BYTES)
+    return parseRkpIssuedList(output)
+  }
+
+  async importIssuedRkpKeybox(id: string): Promise<void> {
+    if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('Invalid issued RKP item ID')
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-rkp-import', id, '--confirm-replace'],
+      256,
+    )
+    if (output !== 'rkp_imported') throw new Error('OMK returned an unexpected RKP import result')
+  }
+
   async getAppPatchLevels(): Promise<AppPatchProfiles> {
     const { keymint } = await this.#getHelperPaths()
     const output = await this.#run(keymint, ['--webui-get-app-patch-levels'], MAX_APP_PATCH_LEVELS_JSON_BYTES)
@@ -753,6 +871,31 @@ export class Cli {
     const normalized = normalizeScoopTargets(packages)
     const payload = encodeBase64Utf8(JSON.stringify(normalized))
     await this.#runInject(['--webui-set-scoop', payload])
+  }
+
+  async updateScoop(added: string[], removed: string[]): Promise<string[]> {
+    const payload = encodeBase64Utf8(JSON.stringify({
+      added: normalizeScoopTargets(added), removed: normalizeScoopTargets(removed),
+    }))
+    const output = await this.#runInject(['--webui-update-scoop', payload])
+    return normalizeScoopTargets(parseCanonicalJson(output, 'package list'))
+  }
+
+  async getAutoTargets(): Promise<boolean> {
+    const output = await this.#runInject(['--webui-get-auto-targets'])
+    const state = parseCanonicalJson(output, 'automatic package selection')
+    if (!isRecord(state) || !hasOnlyKeys(state, ['enabled']) || typeof state.enabled !== 'boolean') {
+      throw new Error('OMK returned an invalid automatic package selection state')
+    }
+    return state.enabled
+  }
+
+  async setAutoTargets(enabled: boolean): Promise<void> {
+    const output = await this.#runInject(['--webui-set-auto-targets', enabled ? '1' : '0'])
+    const state = parseCanonicalJson(output, 'automatic package selection')
+    if (!isRecord(state) || state.enabled !== enabled) {
+      throw new Error('Automatic package selection was not saved')
+    }
   }
 
   async installKeybox(contents: Uint8Array): Promise<void> {
@@ -839,27 +982,21 @@ export class Cli {
   async getSoterHal(): Promise<SoterHalState> {
     const { keymint } = await this.#getHelperPaths()
     const output = await this.#run(keymint, ['--webui-get-soter-hal'], MAX_SOTER_HAL_JSON_BYTES + 1)
-    const parsed = parseCanonicalJson(output, 'Soter HAL state')
-    if (!isRecord(parsed)
-        || !hasOnlyKeys(parsed, ['enabled', 'remote_enabled', 'url', 'token', 'device_id', 'tls_insecure', 'uid_map'])
-        || typeof parsed.enabled !== 'boolean'
-        || typeof parsed.remote_enabled !== 'boolean'
-        || typeof parsed.url !== 'string'
-        || typeof parsed.token !== 'string'
-        || typeof parsed.device_id !== 'string'
-        || typeof parsed.tls_insecure !== 'boolean'
-        || typeof parsed.uid_map !== 'string') {
-      throw new Error('OMK returned invalid Soter HAL state')
-    }
-    return parsed as unknown as SoterHalState
+    return parseSoterHalState(output)
   }
 
-  async setSoterHal(state: SoterHalState): Promise<void> {
+  async setSoterHal(state: SoterHalState): Promise<SoterHalState> {
     const { keymint } = await this.#getHelperPaths()
-    // Relay identity is only what the user configured; the native save
-    // validates and stores it verbatim, so the mandatory read-back check
-    // compares the saved values directly.
-    const json = JSON.stringify(state)
+    // Native save resolves empty relay identity fields to the module defaults,
+    // including when the relay is currently disabled. Normalize before the
+    // write so the mandatory read-back check compares effective values.
+    const effectiveState: SoterHalState = {
+      ...state,
+      url: state.url || DEFAULT_SOTER_RELAY_URL,
+      token: state.token || DEFAULT_SOTER_RELAY_TOKEN,
+      device_id: state.device_id || DEFAULT_SOTER_RELAY_DEVICE_ID,
+    }
+    const json = JSON.stringify(effectiveState)
     if (new TextEncoder().encode(json).byteLength > MAX_SOTER_HAL_JSON_BYTES) {
       throw new Error('Soter HAL configuration exceeds the byte limit')
     }
@@ -871,9 +1008,31 @@ export class Cli {
       throw new Error('OMK returned an unexpected Soter HAL result')
     }
     const persisted = await this.getSoterHal()
-    if (JSON.stringify(persisted) !== json) {
+    // App selections have their own merge-on-save command. A settings dialog
+    // must not overwrite selections changed since it was opened.
+    if (JSON.stringify({ ...persisted, app_targets: effectiveState.app_targets }) !== json) {
       throw new Error('Soter HAL configuration read-back did not match the saved values')
     }
+    return persisted
+  }
+
+  async setSoterAppTarget(target: string, enabled: boolean): Promise<SoterHalState> {
+    const parsed = parseScoopTarget(target)
+    if (parsed?.kind !== 'package-user' || parsed.target !== target) {
+      throw new Error('Invalid per-app Soter target')
+    }
+    const { keymint } = await this.#getHelperPaths()
+    const payload = encodeBase64Utf8(JSON.stringify({ target, enabled }))
+    const output = await this.#run(keymint, ['--webui-set-soter-app-target-base64', payload], MAX_SOTER_HAL_JSON_BYTES + 1)
+    const reported = parseSoterHalState(output)
+    const persisted = await this.getSoterHal()
+    for (const state of [reported, persisted]) {
+      if (state.app_targets.includes(target) !== enabled
+          || (enabled && (!state.app_enabled || !state.remote_enabled))) {
+        throw new Error('Soter app activation read-back did not match the requested state')
+      }
+    }
+    return persisted
   }
 
   async getWallpaper(): Promise<WallpaperState> {
