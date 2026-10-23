@@ -160,7 +160,12 @@ picker can use another installed storage app such as MT Manager and requests
 all MIME types because providers may label XML as `text/plain` or
 `application/octet-stream`; the WebUI still requires an `.xml` filename. If the
 system picker cannot be opened, the WebUI falls back to its shared-storage
-browser. It does not change `[crypto]`, device identity, or unrelated
+browser. The same browser also installs a JPG, PNG or WebP page
+background of at most 10 MiB; the helper copies that picture on the device,
+validates its file header, and keeps it at
+`/data/misc/keystore/omk/data/wallpaper.bin`, while **Restore the default
+wallpaper** deletes it and returns to the packaged picture. Neither action uses
+the network. It does not change `[crypto]`, device identity, or unrelated
 configuration settings.
 
 The Home page checks every certificate serial number in the active Keybox
@@ -304,7 +309,11 @@ downloaded through OMK's native HTTPS client, validated, and expanded into
 matching Android Build fields. OMK's own Zygisk payload reads that profile
 when the target process starts through the Zygisk Next loader. Zygisk Next must
 be installed and active by the user; OMK does not bundle, install, or implement
-that loader.
+that loader. While Build or property spoofing is on, OMK's own KeyMint reports
+the profile's brand, device, product, manufacturer, and model in key
+attestation and in its hardware info, so the certified identity matches the
+identity Google Play services sees; telephony identifiers and the serial stay
+bound to the configured device.
 
 OMK applies these fields while starting `com.google.android.gms.unstable`,
 including its named `:...` child processes. During
@@ -644,7 +653,7 @@ For a report, note the exact reproduction time and also collect
 ### What should I include in a bug report?
 
 Use the
-[bug report form](https://github.com/qwq233/OhMyKeymint/issues/new?template=bug_report.yml)
+[bug report form](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues/new?template=bug_report.yml)
 and include:
 
 - the full release tag or build identity, not just "latest";
@@ -682,13 +691,13 @@ or distributing OMK.
 ### Where should I ask for help?
 
 Use the
-[Question form](https://github.com/qwq233/OhMyKeymint/issues/new?template=question.yml)
+[Question form](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues/new?template=question.yml)
 for a usage question, the
-[Bug report form](https://github.com/qwq233/OhMyKeymint/issues/new?template=bug_report.yml)
+[Bug report form](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues/new?template=bug_report.yml)
 for a repeatable defect, and the
-[Feature request form](https://github.com/qwq233/OhMyKeymint/issues/new?template=feature_request.yml)
+[Feature request form](https://github.com/qianxiaoaa/OhMyKeymint-R1/issues/new?template=feature_request.yml)
 for a proposed change. Read this FAQ and search existing reports first.
 
-For community discussion, use the Telegram link in the [README](../README.md).
+For community discussion, use the group link in the [README](../README.md).
 Never share private keys, generated seeds, or personal identifiers in any
 support channel.

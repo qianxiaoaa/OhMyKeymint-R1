@@ -13,13 +13,16 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.PAT }}
       SOURCE_REPO: ${{ github.repository }}
-      TARGET_REPO: KernelSU-Modules-Repo/oh_my_keymint
+      TARGET_REPO: ${{ vars.OMK_TARGET_REPO }}
+      AUTHOR_NAME: ${{ vars.OMK_AUTHOR_NAME || '浅笑呐' }}
+      AUTHOR_EMAIL: ${{ vars.OMK_AUTHOR_EMAIL || 'qianxiaoaa@users.noreply.github.com' }}
+      TARGET_BRANCH: ${{ vars.OMK_TARGET_BRANCH || 'master' }}
 
     steps:
-      - name: Checkout repository (master)
+      - name: Checkout repository (main)
         uses: actions/checkout@v7
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           token: ${{ secrets.PAT }}
 
@@ -75,9 +78,6 @@ jobs:
             exit 1
           fi
 
-          git fetch --force --tags origin
-          version_code=$(git rev-list --count "$tag_name")
-
           write_output() {
             local name="$1"
             local value="$2"
@@ -92,7 +92,6 @@ jobs:
 
           write_output "tag_name" "$tag_name"
           write_output "release_zip_url" "$release_zip_url"
-          write_output "version_code" "$version_code"
           write_output "source_release_json" "$RELEASE_JSON"
           write_output "asset_dir" "$ASSET_DIR"
 
@@ -118,6 +117,18 @@ jobs:
             fi
           done
 
+          # The package is the authority for versionCode. build.py stamps it, and an update
+          # check that publishes any other number can make a newer release look like a downgrade.
+          release_zip="$ASSET_DIR/$(basename "$release_zip_url")"
+          if [ ! -f "$release_zip" ]; then
+            echo "::error::Release package $release_zip is missing after the download."
+            exit 1
+          fi
+
+          version_code=$(python3 scripts/read_package_metadata.py "$release_zip" --key versionCode)
+          echo "Read versionCode=$version_code from $(basename "$release_zip")"
+          write_output "version_code" "$version_code"
+
       - name: Checkout changelog branch
         uses: actions/checkout@v7
         with:
@@ -137,8 +148,8 @@ jobs:
           set -euo pipefail
 
           cd changelog-branch
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "$AUTHOR_NAME"
+          git config user.email "$AUTHOR_EMAIL"
 
           jq -r '.body // ""' "$SOURCE_RELEASE_JSON" > changelog.md
 
@@ -146,7 +157,7 @@ jobs:
             --arg version "$TAG_NAME" \
             --argjson versionCode "$VERSION_CODE" \
             --arg zipUrl "$RELEASE_ZIP_URL" \
-            --arg changelog "https://raw.githubusercontent.com/ITxiao6666/OhMyKeymint/changelog/changelog.md" \
+            --arg changelog "https://raw.githubusercontent.com/$SOURCE_REPO/changelog/changelog.md" \
             '{
               version: $version,
               versionCode: $versionCode,
@@ -166,6 +177,7 @@ jobs:
           printf 'sync_commit=%s\n' "$sync_commit" >> "$GITHUB_OUTPUT"
 
       - name: Sync target branch and tag
+        if: ${{ env.TARGET_REPO != '' }}
         env:
           SYNC_COMMIT: ${{ steps.changelog.outputs.sync_commit }}
           TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
@@ -179,7 +191,7 @@ jobs:
 
           git remote remove target 2>/dev/null || true
           git remote add target "$target_url"
-          git push target "$sync_commit:refs/heads/master" --force
+          git push target "$sync_commit:refs/heads/$TARGET_BRANCH" --force
 
           release_json="$RUNNER_TEMP/target-release.json"
           find_target_release() {
@@ -214,6 +226,7 @@ jobs:
           fi
 
       - name: Sync target release and assets
+        if: ${{ env.TARGET_REPO != '' }}
         env:
           SOURCE_RELEASE_JSON: ${{ steps.release_info.outputs.source_release_json }}
           ASSET_DIR: ${{ steps.release_info.outputs.asset_dir }}
@@ -248,7 +261,7 @@ jobs:
 
           jq -n \
             --arg tag_name "$tag_name" \
-            --arg target_commitish "master" \
+            --arg target_commitish "$TARGET_BRANCH" \
             --arg name "$release_name" \
             --arg body "$release_body" \
             --argjson draft true \

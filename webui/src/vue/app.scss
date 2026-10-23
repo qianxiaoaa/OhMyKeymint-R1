@@ -286,7 +286,11 @@ button { touch-action: manipulation; }
 }
 [data-tone='loading'] { opacity: .7; }
 .home-page .m-top-app-bar__title { align-items: flex-start; width: 100%; padding-inline: var(--omk-page-side); text-align: start; }
-.home-page .m-top-app-bar__title .m-text { font-size: clamp(20px, 5.3vw, 24px); line-height: 1.2; }
+/* The ~30-character release name is about 16em wide, so it shrinks before it would wrap. */
+.home-page .m-top-app-bar__title .m-text {
+  font-size: min(clamp(20px, 5.3vw, 24px), max(16px, (100vw / var(--omk-ui-scale) - 2 * var(--omk-page-side)) / 17));
+  line-height: 1.2;
+}
 .diagnostics-card { margin-top: 12px; }
 .diagnostics-card > .m-card { padding: 14px 12px; background: var(--m-color-surface-container); }
 .diagnostics-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 10px; }
@@ -623,4 +627,169 @@ button { touch-action: manipulation; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* ---------------------------------------------------------------------------
+ * R1 wallpaper and glass surfaces.
+ *
+ * The picture is a module asset written by the keymint helper
+ * (webroot/assets/wallpaper/), so it is available offline and survives a
+ * module update through the copy under the module state directory.
+ *
+ * Contrast rule: the scrim dims the photo before any text sits on it, and a
+ * panel that cannot blur (older WebView without backdrop-filter) stays
+ * nearly opaque instead of turning into unreadable glass.
+ * ------------------------------------------------------------------------ */
+:root {
+  --omk-wallpaper-url: none;
+  --omk-wallpaper-scrim: rgb(247 247 247 / 42%);
+  --omk-wallpaper-glass: rgb(255 255 255 / 58%);
+  --omk-wallpaper-glass-strong: rgb(255 255 255 / 78%);
+  --omk-wallpaper-edge: rgb(255 255 255 / 22%);
+  --omk-wallpaper-shadow: 0 6px 22px rgb(0 0 0 / 16%);
+  --omk-clear-glass-edge: rgb(255 255 255 / 55%);
+  --omk-clear-glass-halo: 0 0 2px rgb(255 255 255 / 85%), 0 0 10px rgb(255 255 255 / 60%);
+}
+:root.m-theme-dark,
+:root[data-theme-resolved='dark'] {
+  --omk-wallpaper-scrim: rgb(0 0 0 / 48%);
+  --omk-wallpaper-glass: rgb(30 30 30 / 58%);
+  --omk-wallpaper-glass-strong: rgb(24 24 24 / 80%);
+  --omk-wallpaper-edge: rgb(255 255 255 / 12%);
+  --omk-wallpaper-shadow: 0 6px 22px rgb(0 0 0 / 42%);
+  --omk-clear-glass-edge: rgb(255 255 255 / 20%);
+  --omk-clear-glass-halo: 0 0 2px rgb(0 0 0 / 85%), 0 0 10px rgb(0 0 0 / 60%);
+}
+.omk-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-color: var(--m-color-surface);
+  background-image: var(--omk-wallpaper-url);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  pointer-events: none;
+}
+.omk-wallpaper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--omk-wallpaper-scrim);
+}
+:root[data-wallpaper] .omk-app,
+:root[data-wallpaper] .page-host { position: relative; z-index: 1; }
+
+/* Cards become frosted panels; the solid token stays as the first declaration
+ * so a WebView without color-mix() or backdrop-filter keeps a readable card. */
+:root[data-wallpaper] .m-card,
+:root[data-wallpaper] .m-surface,
+:root[data-wallpaper] .m-dropdown-preference__popup,
+:root[data-wallpaper] .m-dialog__content,
+:root[data-wallpaper] .m-bottom-sheet__content {
+  background-color: var(--omk-wallpaper-glass-strong);
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper] .m-card,
+  :root[data-wallpaper] .m-surface,
+  :root[data-wallpaper] .m-dropdown-preference__popup,
+  :root[data-wallpaper] .m-dialog__content,
+  :root[data-wallpaper] .m-bottom-sheet__content {
+    background-color: color-mix(in srgb, var(--m-color-surface-container) 58%, transparent);
+  }
+}
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-card,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-surface,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-dropdown-preference__popup,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-dialog__content,
+:root[data-wallpaper][data-backdrop-blur-supported='true'] .m-bottom-sheet__content {
+  -webkit-backdrop-filter: blur(26px) saturate(1.3);
+  backdrop-filter: blur(26px) saturate(1.3);
+  box-shadow: inset 0 0 0 1px var(--omk-wallpaper-edge), var(--omk-wallpaper-shadow);
+}
+:root[data-wallpaper] .diagnostics-card > .m-card,
+:root[data-wallpaper] .identity-card > .m-card {
+  background-color: transparent;
+}
+:root[data-wallpaper] .preference-card > .m-card {
+  background: var(--omk-wallpaper-glass-strong);
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper] .preference-card > .m-card {
+    background: color-mix(
+      in srgb,
+      var(--m-color-primary-container) var(--omk-preference-mix),
+      color-mix(in srgb, var(--m-color-surface-container) 58%, transparent)
+    );
+  }
+}
+/* Bars follow the same treatment only when the user asked for a blurred bar;
+ * otherwise a translucent bar over a photo loses its title contrast. */
+:root[data-wallpaper][data-bar-blur='true'] .m-top-app-bar,
+:root[data-wallpaper][data-bar-blur='true'] .main-navigation {
+  background: var(--omk-bar-background) !important;
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper][data-bar-blur='true'] .m-top-app-bar,
+  :root[data-wallpaper][data-bar-blur='true'] .main-navigation {
+    background: color-mix(in srgb, var(--m-color-surface) 62%, transparent) !important;
+  }
+}
+:root[data-wallpaper][data-bar-blur='true'][data-backdrop-blur-supported='true'] .m-top-app-bar,
+:root[data-wallpaper][data-bar-blur='true'][data-backdrop-blur-supported='true'] .main-navigation {
+  -webkit-backdrop-filter: blur(26px) saturate(1.3);
+  backdrop-filter: blur(26px) saturate(1.3);
+}
+/* Monet-tinted overrides above use !important; the wallpaper layer must not
+ * win over an explicit "no dynamic color" preference. */
+:root[data-wallpaper][data-monet='false'] .identity-card > .m-card,
+:root[data-wallpaper][data-monet='false'] .preference-card > .m-card,
+:root[data-wallpaper][data-monet='false'] .settings-card .m-card {
+  background: var(--omk-wallpaper-glass-strong) !important;
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+  :root[data-wallpaper][data-monet='false'] .identity-card > .m-card,
+  :root[data-wallpaper][data-monet='false'] .preference-card > .m-card,
+  :root[data-wallpaper][data-monet='false'] .settings-card .m-card {
+    background: color-mix(in srgb, var(--m-color-surface-container) 58%, transparent) !important;
+  }
+}
+/* Home panels are clear glass: the photo shows through unblurred, so the rim
+ * outlines each panel and the text carries its own halo for contrast. */
+:root[data-wallpaper] .home-page .identity-card > .m-card,
+:root[data-wallpaper] .home-page .diagnostics-card > .m-card {
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: inset 0 0 0 1px var(--omk-clear-glass-edge);
+  text-shadow: var(--omk-clear-glass-halo);
+}
+:root[data-wallpaper] .home-page .diagnostics-refresh {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--omk-clear-glass-edge);
+  text-shadow: var(--omk-clear-glass-halo);
+}
+/* The home title scrolls away with the page; the status-bar strip above it
+ * stays clear at the top and fades back in once the title has scrolled off. */
+:root[data-wallpaper] .app-page.home-page > .m-top-app-bar {
+  position: relative;
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  text-shadow: var(--omk-clear-glass-halo);
+}
+:root[data-wallpaper] .app-page.home-page > .m-top-app-bar::before { content: none; }
+/* Engines without scroll timelines keep the solid strip. The fade spans the
+ * 52px miuix title row, which .omk-app zooms by the interface scale. */
+@supports (animation-timeline: scroll()) {
+  :root[data-wallpaper][data-page='home'] body::before {
+    opacity: 0;
+    animation: omk-status-strip-in linear both;
+    animation-timeline: scroll(root block);
+    animation-range: 0 calc(52px * var(--omk-ui-scale));
+  }
+}
+@keyframes omk-status-strip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

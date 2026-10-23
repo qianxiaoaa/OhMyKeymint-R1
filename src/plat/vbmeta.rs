@@ -280,6 +280,30 @@ fn resolve_vb_hash(spec: &TrustValueSpec) -> ResolvedField {
     }
 }
 
+/// R1: reads the vbmeta values the device currently reports. A random fallback is
+/// never returned, because pinning a per-boot random value would freeze the wrong
+/// root of trust into the configuration.
+pub(crate) fn live_vbmeta_values(device_locked: bool) -> Option<([u8; 32], [u8; 32])> {
+    let slot_suffix = resetprop::read_string_property("ro.boot.slot_suffix").unwrap_or_default();
+    let vb_key = resolve_vb_key(&TrustValueSpec::Auto, device_locked, &slot_suffix);
+    if !matches!(
+        vb_key.source,
+        TrustValueSource::Property | TrustValueSource::Computed
+    ) {
+        log::warn!("no live vbmeta public key digest from properties or vbmeta computation");
+        return None;
+    }
+    let vb_hash = resolve_vb_hash(&TrustValueSpec::Auto);
+    if !matches!(
+        vb_hash.source,
+        TrustValueSource::Property | TrustValueSource::Original
+    ) {
+        log::warn!("no live vbmeta digest from properties or the original root of trust");
+        return None;
+    }
+    Some((vb_key.value, vb_hash.value))
+}
+
 fn random_field(source: TrustValueSource) -> ResolvedField {
     let mut rng = BoringRng {};
     let mut value = [0u8; 32];
@@ -291,16 +315,16 @@ pub(crate) fn resolve_patch_levels(trust: &RawTrustConfig) -> Result<ResolvedPat
     let observed_security_patch = resetprop::read_string_property(SECURITY_PATCH_PROP);
     let security_patch = observed_security_patch
         .clone()
-        .or_else(|| read_build_prop_value(SECURITY_PATCH_PROP));
+        .or_else(|| patch_property_from_disk(SECURITY_PATCH_PROP));
     if security_patch.is_none() {
         log::warn!(
             "failed to read {SECURITY_PATCH_PROP} from properties or build.prop; using {SECURITY_PATCH_FALLBACK}"
         );
     }
     let vendor_patch = resetprop::read_string_property(VENDOR_PATCH_PROP)
-        .or_else(|| read_build_prop_value(VENDOR_PATCH_PROP));
+        .or_else(|| patch_property_from_disk(VENDOR_PATCH_PROP));
     let property_boot_patch = resetprop::read_string_property(BOOT_PATCH_PROP)
-        .or_else(|| read_build_prop_value(BOOT_PATCH_PROP));
+        .or_else(|| patch_property_from_disk(BOOT_PATCH_PROP));
     let boot_patch = if trust.boot_patchlevel.trim() == "auto" {
         match read_abl_boot_patchlevel() {
             Ok(value) => Some(value),
@@ -415,6 +439,18 @@ pub(crate) fn read_build_prop_value(key: &str) -> Option<String> {
     })
 }
 
+/// A missing or transiently empty runtime property read falls back to the
+/// on-disk build.prop value. Resetprop overrides never exist in build.prop, so
+/// this fallback serves the factory value for that boot only; the log keeps the
+/// divergence from the spoofed reads other processes see visible in diagnostics.
+fn patch_property_from_disk(name: &str) -> Option<String> {
+    let value = read_build_prop_value(name);
+    if value.is_some() {
+        log::info!("{name} had no runtime value; using the on-disk build.prop value");
+    }
+    value
+}
+
 fn parse_build_prop_value(contents: &str, key: &str) -> Option<String> {
     contents
         .lines()
@@ -507,17 +543,49 @@ fn current_year_month() -> Result<(i32, u32)> {
 }
 
 fn sync_sysprops_if_needed(vb_key: &ResolvedField, vb_hash: &ResolvedField) -> Result<()> {
-    if vb_key.source.needs_sysprop_write() {
-        let value = hex::encode(vb_key.value);
-        resetprop::direct_write_and_verify_property(VBMETA_KEY_PROP, &value)?;
-    }
+    write_sysprop_idempotently_with(
+        VBMETA_KEY_PROP,
+        vb_key,
+        resetprop::direct_write_and_verify_property,
+        resetprop::read_string_property,
+    )?;
+    write_sysprop_idempotently_with(
+        VBMETA_HASH_PROP,
+        vb_hash,
+        resetprop::direct_write_and_verify_property,
+        resetprop::read_string_property,
+    )
+}
 
-    if vb_hash.source.needs_sysprop_write() {
-        let value = hex::encode(vb_hash.value);
-        resetprop::direct_write_and_verify_property(VBMETA_HASH_PROP, &value)?;
+/// Other resetprop users share the ro.boot.* namespace with these writes. A
+/// property that already carries the resolved value is left untouched so
+/// repeated bootstraps stay idempotent, and every actual overwrite is logged
+/// with the replaced value so a foreign writer is visible in diagnostics.
+fn write_sysprop_idempotently_with<W, R>(
+    name: &str,
+    field: &ResolvedField,
+    mut write: W,
+    read: R,
+) -> Result<()>
+where
+    W: FnMut(&str, &str) -> Result<()>,
+    R: Fn(&str) -> Option<String>,
+{
+    if !field.source.needs_sysprop_write() {
+        return Ok(());
     }
-
-    Ok(())
+    let desired = hex::encode(field.value);
+    match read(name) {
+        Some(current) if current == desired => {
+            log::debug!("{name} already carries the resolved vbmeta value; write skipped");
+            Ok(())
+        }
+        Some(current) => {
+            log::info!("{name} held {current}; writing the resolved vbmeta value");
+            write(name, &desired)
+        }
+        None => write(name, &desired),
+    }
 }
 
 fn read_hex_property(name: &str) -> Option<[u8; 32]> {
@@ -1491,6 +1559,94 @@ ro.vendor.boot_security_patch.extra = ignored
         assert!(!TrustValueSource::ExplicitHex.needs_sysprop_write());
         assert!(!TrustValueSource::Property.needs_sysprop_write());
         assert!(!TrustValueSource::Persisted.needs_sysprop_write());
+    }
+
+    #[test]
+    fn sysprop_sync_skips_a_property_that_already_matches() {
+        let writes = std::cell::Cell::new(0);
+        let field = ResolvedField {
+            value: [0x11; 32],
+            source: TrustValueSource::Computed,
+        };
+        write_sysprop_idempotently_with(
+            "ro.boot.vbmeta.digest",
+            &field,
+            |_, _| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| Some("11".repeat(32)),
+        )
+        .unwrap();
+        assert_eq!(writes.get(), 0);
+    }
+
+    #[test]
+    fn sysprop_sync_overwrites_a_foreign_value_once() {
+        let writes = std::cell::Cell::new(0);
+        let field = ResolvedField {
+            value: [0x22; 32],
+            source: TrustValueSource::Original,
+        };
+        write_sysprop_idempotently_with(
+            "ro.boot.vbmeta.digest",
+            &field,
+            |name, value| {
+                writes.set(writes.get() + 1);
+                assert_eq!(name, "ro.boot.vbmeta.digest");
+                assert_eq!(value, "22".repeat(32));
+                Ok(())
+            },
+            |_| Some("33".repeat(32)),
+        )
+        .unwrap();
+        assert_eq!(writes.get(), 1);
+    }
+
+    #[test]
+    fn sysprop_sync_writes_a_missing_property() {
+        let writes = std::cell::Cell::new(0);
+        let field = ResolvedField {
+            value: [0x44; 32],
+            source: TrustValueSource::RandomFallback,
+        };
+        write_sysprop_idempotently_with(
+            "ro.boot.vbmeta.digest",
+            &field,
+            |_, _| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| None,
+        )
+        .unwrap();
+        assert_eq!(writes.get(), 1);
+    }
+
+    #[test]
+    fn sysprop_sync_ignores_sources_that_do_not_need_a_write() {
+        for source in [
+            TrustValueSource::ExplicitHex,
+            TrustValueSource::Property,
+            TrustValueSource::Persisted,
+        ] {
+            let writes = std::cell::Cell::new(0);
+            let field = ResolvedField {
+                value: [0x55; 32],
+                source,
+            };
+            write_sysprop_idempotently_with(
+                "ro.boot.vbmeta.digest",
+                &field,
+                |_, _| {
+                    writes.set(writes.get() + 1);
+                    Ok(())
+                },
+                |_| Some("66".repeat(32)),
+            )
+            .unwrap();
+            assert_eq!(writes.get(), 0, "{source:?} must not trigger a write");
+        }
     }
 
     fn build_test_vbmeta(

@@ -10,6 +10,7 @@ import {
 } from 'miuix-vue'
 import { ExpandMore, Info } from 'miuix-vue/icons'
 import type {
+  CloudStatus,
   DiagnosticsState,
   KeyboxInspector,
   KeyboxLevel,
@@ -30,13 +31,16 @@ const props = defineProps<{
   keyboxInspector: KeyboxInspector | null
   diagnostics: DiagnosticsState | null
   diagnosticsStatus: 'loading' | 'ready' | 'error'
+  cloudStatus: CloudStatus | null
   teeStatus: TeeStatus
   securityPatch: string | null
   spoofedDevice: string | null | undefined
+  moduleName: string
 }>()
 
 const emit = defineEmits<{
   refreshDiagnostics: []
+  refreshCloud: []
 }>()
 
 const expandedKeyboxChains = ref(new Set<string>())
@@ -136,6 +140,64 @@ const hardwareRows = computed(() => {
   ]
 })
 
+const rotStatusLabel = computed(() => {
+  const rot = props.diagnostics?.rot
+  if (!rot) return tr('home_diag_unknown', 'Unknown')
+  if (rot.drift) return tr('home_diag_rot_drift', 'Drifted since the last pin')
+  return rot.pinned ? tr('home_diag_rot_pinned', 'Pinned') : tr('home_diag_rot_live', 'Live vbmeta values')
+})
+
+const cloudRows = computed(() => {
+  const cloud = props.cloudStatus
+  if (!cloud) return []
+  return [
+    {
+      id: 'mirror' as const,
+      label: tr('home_diag_mirror', 'Mirror keybox feed'),
+      status: cloud.mirror.last_status,
+      detail: cloud.mirror.last_source,
+      error: cloud.mirror.last_error,
+      last: cloud.mirror.last_fetch_unix,
+    },
+    {
+      id: 'online' as const,
+      label: tr('home_diag_online', 'Online heartbeat'),
+      status: cloud.online.last_status,
+      detail: cloud.online.module_id,
+      error: cloud.online.last_error,
+      last: cloud.online.last_report_unix,
+    },
+  ]
+})
+
+function cloudStatusLabel(status: string): string {
+  switch (status) {
+    case 'applied': return tr('home_cloud_mirror_applied', 'Applied')
+    case 'unchanged': return tr('home_cloud_mirror_unchanged', 'Up to date')
+    case 'ok': return tr('home_cloud_online_ok', 'Reporting')
+    case 'failed': return tr('home_cloud_failed', 'Failed')
+    default: return status === '' ? tr('home_cloud_pending', 'Pending') : status
+  }
+}
+
+function cloudTone(status: string): string {
+  return status === 'failed' ? 'error' : 'muted'
+}
+
+function formatCloudTime(unix: number): string {
+  if (unix <= 0) return tr('home_cloud_never', 'Never')
+  const date = new Date(unix * 1000)
+  if (Number.isNaN(date.getTime())) return tr('home_cloud_never', 'Never')
+  return new Intl.DateTimeFormat(i18n.lang, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(date)
+}
+
 function diagnosticStatusLabel(status: string): string {
   switch (status) {
     case 'running': return tr('home_diag_running', 'Running')
@@ -177,7 +239,7 @@ function certificateDate(value: string): string {
 
 <template>
   <section class="app-page home-page" aria-labelledby="home-title">
-    <MiuixTopAppBar id="home-title" title="Oh My Keymint" />
+    <MiuixTopAppBar id="home-title" :title="moduleName" />
 
     <div class="identity-grid" aria-live="polite">
       <MiuixCard class="identity-card" press-feedback="none">
@@ -241,6 +303,15 @@ function certificateDate(value: string): string {
           <dd :data-tone="diagnosticTone(row.value.status)">
             {{ diagnosticStatusLabel(row.value.status) }}
             <small v-if="row.value.pid !== null">PID {{ row.value.pid }}</small>
+          </dd>
+        </div>
+      </dl>
+      <dl v-if="diagnostics" class="diagnostics-services">
+        <div class="diagnostics-service">
+          <dt>{{ tr('home_diag_rot', 'Root of trust') }}</dt>
+          <dd :data-tone="diagnostics.rot.drift ? 'error' : 'muted'">
+            {{ rotStatusLabel }}
+            <small>{{ diagnostics.rot.mode }}</small>
           </dd>
         </div>
       </dl>
@@ -322,6 +393,43 @@ function certificateDate(value: string): string {
           </div>
         </div>
       </div>
+    </MiuixCard>
+
+    <MiuixCard class="diagnostics-card" press-feedback="none">
+      <header class="diagnostics-heading">
+        <div>
+          <h2>{{ tr('home_cloud_title', 'Cloud status') }}</h2>
+          <span>{{ tr('home_cloud_desc', 'Mirror keybox feed and online heartbeat') }}</span>
+        </div>
+        <MiuixButton
+          type="default"
+          class="diagnostics-refresh"
+          @click="emit('refreshCloud')"
+        >
+          {{ tr('tools_diagnostics_refresh', 'Refresh') }}
+        </MiuixButton>
+      </header>
+      <div v-if="!cloudRows.length" class="diagnostics-empty" role="status">
+        <MiuixIcon :icon="Info" :size="22" />
+        <span>{{ tr('home_cloud_unavailable', 'Cloud status unavailable') }}</span>
+      </div>
+      <dl v-else class="diagnostics-services">
+        <div v-for="row in cloudRows" :key="row.id" class="diagnostics-service">
+          <dt>{{ row.label }}</dt>
+          <dd :data-tone="cloudTone(row.status)">
+            {{ cloudStatusLabel(row.status) }}
+            <small v-if="row.detail">{{ row.detail }}</small>
+          </dd>
+        </div>
+        <div v-for="row in cloudRows" :key="`${row.id}-time`" class="diagnostics-service diagnostics-service--time">
+          <dt>{{ row.id === 'mirror' ? tr('home_cloud_last_fetch', 'Last fetch') : tr('home_cloud_last_report', 'Last report') }}</dt>
+          <dd :data-tone="'muted'">{{ formatCloudTime(row.last) }}</dd>
+        </div>
+        <div v-if="cloudRows.some(row => row.error)" class="diagnostics-service diagnostics-service--error">
+          <dt>{{ tr('home_cloud_error', 'Error') }}</dt>
+          <dd :data-tone="'error'">{{ cloudRows.find(row => row.error)?.error }}</dd>
+        </div>
+      </dl>
     </MiuixCard>
 
   </section>

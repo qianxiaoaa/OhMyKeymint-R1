@@ -32,4 +32,4 @@ Related issue:
       required notices.
 - [ ] I have read and agree to the copyright, concurrent-license, dispute
       authorization, and relicensing terms in
-      [CONTRIBUTING.md](https://github.com/qwq233/OhMyKeymint/blob/master/docs/CONTRIBUTING.md).
+      [CONTRIBUTING.md](https://github.com/qianxiaoaa/OhMyKeymint-R1/blob/main/docs/CONTRIBUTING.md).

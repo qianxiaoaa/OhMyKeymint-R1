@@ -17,10 +17,12 @@ pub fn init_logger_fallback(level: LevelFilter) {
 }
 
 fn init_logger_inner(configured_level: LevelFilter) -> Result<()> {
+    // The on-disk log carries info and above only; debug and trace stay on
+    // logcat so the persistent file does not accumulate ptrace-level traces.
     let (config, file_logging_ready) = kmr_common::runtime::logging::build_console_file_config(
         DEFAULT_LOG_PATH,
         PATTERN,
-        LevelFilter::Trace,
+        LevelFilter::Info,
         "injector logging",
     )?;
 

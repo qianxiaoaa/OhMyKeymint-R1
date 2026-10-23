@@ -150,11 +150,10 @@ fn do_inject(pid: Pid, self_path: &std::path::Path) -> Result<()> {
         generate_remote_payload_identifier().context("failed to generate payload identifier")?;
     log_loader_abi();
     info!(
-        "starting injection build_id={} pid={} payload={} self_path={}",
+        "starting injection build_id={} pid={} payload={}",
         crate::utils::build_id(),
         pid,
         payload_identifier,
-        self_path.display(),
     );
     let mut regs = sys::get_regs(pid)?;
 
@@ -299,9 +298,8 @@ fn do_inject(pid: Pid, self_path: &std::path::Path) -> Result<()> {
     })?;
     let local_lib_fd = local_lib_file.as_raw_fd();
     info!(
-        "local payload file ready: fd={} path={} identifier={} sha256={}",
+        "local payload file ready: fd={} identifier={} sha256={}",
         local_lib_fd,
-        self_path.display(),
         payload_identifier,
         utils::sha256_file(self_path).unwrap_or_else(|_| "<unavailable>".to_string())
     );

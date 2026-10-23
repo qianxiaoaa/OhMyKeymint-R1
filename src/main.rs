@@ -32,20 +32,24 @@ pub mod keymaster;
 pub mod keymint;
 pub mod logging;
 pub mod macros;
+pub mod mirror_keybox;
+pub mod online_report;
 pub mod pif_spoof;
 pub mod plat;
 pub mod proto;
+pub mod r1_report;
 pub mod security_patch;
 pub mod selinux;
 pub mod soter_beta;
 pub mod soter_hal;
+pub mod trust_pin;
 pub mod utils;
+pub mod wallpaper;
 pub mod watchdog;
 pub mod webui_activity;
 pub mod webui_http;
 
 include!(concat!(env!("OUT_DIR"), "/aidl.rs"));
-// include!( "./aidl.rs"); // for development only
 
 fn storage_warn(message: String) {
     if log::log_enabled!(log::Level::Warn) {
@@ -339,6 +343,15 @@ struct WebUiDiagnostics {
     rkp_tee: WebUiServiceDiagnostic,
     rkp_strongbox: WebUiServiceDiagnostic,
     selinux: &'static str,
+    rot: WebUiRotDiagnostic,
+}
+
+#[derive(Serialize)]
+struct WebUiRotDiagnostic {
+    status: &'static str,
+    mode: String,
+    pinned: bool,
+    drift: bool,
 }
 
 #[derive(Serialize)]
@@ -384,7 +397,7 @@ fn webui_keybox_inspector() -> Result<String, String> {
         .map_err(|error| format!("failed to serialize keybox inspector: {error}"))
 }
 
-fn process_pid(names: &[&str], expected_executable: Option<&Path>) -> Option<u32> {
+pub(crate) fn process_pid(names: &[&str], expected_executable: Option<&Path>) -> Option<u32> {
     let current_pid = std::process::id();
     let entries = std::fs::read_dir("/proc").ok()?;
     for entry in entries.flatten() {
@@ -420,7 +433,7 @@ fn process_pid(names: &[&str], expected_executable: Option<&Path>) -> Option<u32
     None
 }
 
-fn pidfile_process(path: &str, marker: &str) -> Option<u32> {
+pub(crate) fn pidfile_process(path: &str, marker: &str) -> Option<u32> {
     let pid = std::fs::read_to_string(path)
         .ok()?
         .trim()
@@ -484,6 +497,26 @@ fn selinux_diagnostic() -> &'static str {
     }
 }
 
+fn rot_diagnostic() -> WebUiRotDiagnostic {
+    match trust_pin::status_report() {
+        Ok(report) => WebUiRotDiagnostic {
+            status: if report.drift { "drift" } else { "ok" },
+            mode: report.mode.to_string(),
+            pinned: report.pinned_in_config,
+            drift: report.drift,
+        },
+        Err(error) => {
+            warn!("root of trust diagnostic failed: {error:#}");
+            WebUiRotDiagnostic {
+                status: "unknown",
+                mode: "unknown".to_string(),
+                pinned: false,
+                drift: false,
+            }
+        }
+    }
+}
+
 fn webui_diagnostics() -> String {
     use android::hardware::security::keymint::SecurityLevel::SecurityLevel;
     // A vendor KeyMint process does not prove that OMK itself is running.
@@ -536,6 +569,7 @@ fn webui_diagnostics() -> String {
         rkp_tee: rkp_diagnostic("default"),
         rkp_strongbox: rkp_diagnostic("strongbox"),
         selinux: selinux_diagnostic(),
+        rot: rot_diagnostic(),
     })
     .unwrap_or_else(|_| "{}".to_string())
 }
@@ -729,7 +763,17 @@ fn handle_webui_soter_beta_command(
             prepare_android_storage();
             Some(
                 soter_beta::save(enabled)
-                    .map(|()| "soter_beta_saved".to_string())
+                    .map(|()| {
+                        // The companion reads the flag at every specialization, so restarting the
+                        // Soter service is enough to apply a change. A failed restart must not
+                        // report a failed save, so it is only logged.
+                        if let Err(error) = crate::pif_spoof::refresh_processes(&[
+                            pif_common::soter::TARGET_PACKAGE,
+                        ]) {
+                            warn!("Soter Beta saved but the service restart failed: {error:#}");
+                        }
+                        "soter_beta_saved".to_string()
+                    })
                     .map_err(|error| format!("{error:#}")),
             )
         }
@@ -982,6 +1026,256 @@ fn handle_webui_activity_command() -> Option<Result<String, String>> {
     }
 }
 
+const WEBUI_WALLPAPER_PATH_MAX_BYTES: usize = 4096;
+
+/// Decodes one base64 storage path so spaces and punctuation never have to
+/// survive KernelSU's spawn-through-shell quoting.
+fn decode_webui_wallpaper_path(mut args: impl Iterator<Item = String>) -> Result<String, String> {
+    let Some(encoded) = args.next() else {
+        return Err("--webui-install-wallpaper-base64 requires a storage path".to_string());
+    };
+    if args.next().is_some() {
+        return Err("--webui-install-wallpaper-base64 accepts exactly one path".to_string());
+    }
+    let max_encoded_bytes = WEBUI_WALLPAPER_PATH_MAX_BYTES.div_ceil(3) * 4;
+    if encoded.is_empty() || encoded.len() > max_encoded_bytes {
+        return Err("wallpaper path payload is empty or too large".to_string());
+    }
+    let decoded = BASE64_STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|error| format!("invalid wallpaper path payload: {error}"))?;
+    if decoded.len() > WEBUI_WALLPAPER_PATH_MAX_BYTES {
+        return Err("wallpaper path payload is too large".to_string());
+    }
+    String::from_utf8(decoded).map_err(|_| "wallpaper path payload is not UTF-8".to_string())
+}
+
+fn parse_webui_flag(mut args: impl Iterator<Item = String>, name: &str) -> Result<bool, String> {
+    let Some(value) = args.next() else {
+        return Err(format!("{name} requires exactly one argument: 0 or 1"));
+    };
+    if args.next().is_some() || !matches!(value.as_str(), "0" | "1") {
+        return Err(format!("{name} accepts exactly one argument: 0 or 1"));
+    }
+    Ok(value == "1")
+}
+
+fn handle_webui_rot_command() -> Option<Result<String, String>> {
+    let mut args = std::env::args();
+    let _program = args.next();
+    let command = args.next()?;
+
+    match command.as_str() {
+        "--webui-get-rot-status" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-rot-status does not accept arguments".to_string()
+                ));
+            }
+            prepare_android_storage();
+            Some(trust_pin::status_json().map_err(|error| format!("{error:#}")))
+        }
+        "--webui-repin-rot" => {
+            let purge = match parse_webui_flag(args, "--webui-repin-rot") {
+                Ok(purge) => purge,
+                Err(error) => return Some(Err(error)),
+            };
+            prepare_android_storage();
+            Some(
+                trust_pin::force_repin(purge)
+                    .and_then(|report| {
+                        serde_json::to_string(&report).context("failed to serialize the report")
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn webui_cloud_status() -> Result<String, String> {
+    let mirror = mirror_keybox::status_json().map_err(|error| format!("{error:#}"))?;
+    let online = online_report::status_json().map_err(|error| format!("{error:#}"))?;
+    Ok(format!("{{\"mirror\":{mirror},\"online\":{online}}}"))
+}
+
+/// Normalizes a persisted string so the WebUI status parser accepts it:
+/// control characters (including newlines) become spaces, runs of whitespace
+/// collapse, and the result is capped at the parser's length limit.
+pub(crate) fn sanitize_status_text(text: &str) -> String {
+    let collapsed = text
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    collapsed.chars().take(512).collect()
+}
+
+fn handle_webui_cloud_command(
+    mut args: impl Iterator<Item = String>,
+) -> Option<Result<String, String>> {
+    let _program = args.next();
+    match args.next()?.as_str() {
+        "--webui-get-cloud-status" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-cloud-status does not accept arguments".to_string()
+                ));
+            }
+            prepare_android_storage();
+            Some(webui_cloud_status())
+        }
+        "--webui-refresh-mirror-keybox" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-refresh-mirror-keybox does not accept arguments".to_string(),
+                ));
+            }
+            prepare_android_storage();
+            Some(
+                mirror_keybox::refresh_from_mirrors()
+                    .and_then(|report| {
+                        serde_json::to_string(&report)
+                            .context("failed to serialize the mirror refresh report")
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn handle_r1_command() -> Option<Result<String, String>> {
+    let mut args = std::env::args();
+    let _program = args.next();
+    let command = args.next()?;
+
+    match command.as_str() {
+        "--r1-boot-report" => {
+            if args.next().is_some() {
+                return Some(Err("--r1-boot-report does not accept arguments".to_string()));
+            }
+            prepare_android_storage();
+            // The verdict and its reasons belong in the log the user is asked to send.
+            logging::init_logger();
+            let restore = wallpaper::restore_from_durable();
+            match &restore {
+                Ok(true) => info!("restored the saved wallpaper into the module webroot"),
+                Ok(false) => {}
+                Err(error) => warn!("failed to restore the saved wallpaper: {error:#}"),
+            }
+            Some(
+                r1_report::boot_report()
+                    .and_then(|report| {
+                        serde_json::to_string(&report)
+                            .context("failed to serialize the R1 boot report")
+                    })
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        _ => None,
+    }
+}
+
+fn handle_webui_wallpaper_command() -> Option<Result<String, String>> {
+    let mut args = std::env::args();
+    let _program = args.next();
+    let command = args.next()?;
+
+    let outcome = |result: Result<String>| Some(result.map_err(|error| format!("{error:#}")));
+
+    match command.as_str() {
+        "--webui-get-wallpaper" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-get-wallpaper does not accept arguments".to_string()
+                ));
+            }
+            outcome(wallpaper::get_state())
+        }
+        "--webui-reset-wallpaper" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-reset-wallpaper does not accept arguments".to_string()
+                ));
+            }
+            prepare_android_storage();
+            outcome(wallpaper::reset())
+        }
+        "--webui-stage-wallpaper" => {
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-stage-wallpaper does not accept arguments".to_string()
+                ));
+            }
+            prepare_android_storage();
+            outcome(wallpaper::begin_stage())
+        }
+        "--webui-stage-wallpaper-append" => {
+            let Some(token) = args.next() else {
+                return Some(Err(
+                    "--webui-stage-wallpaper-append requires a token".to_string()
+                ));
+            };
+            let Some(payload) = args.next() else {
+                return Some(Err(
+                    "--webui-stage-wallpaper-append requires a base64 chunk".to_string(),
+                ));
+            };
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-stage-wallpaper-append accepts one token and one chunk".to_string(),
+                ));
+            }
+            prepare_android_storage();
+            Some(
+                wallpaper::append_stage(&token, &payload)
+                    .map(|()| "wallpaper_chunk_accepted".to_string())
+                    .map_err(|error| format!("{error:#}")),
+            )
+        }
+        "--webui-install-wallpaper" | "--webui-install-wallpaper-base64" => {
+            let source = if command == "--webui-install-wallpaper-base64" {
+                match decode_webui_wallpaper_path(args) {
+                    Ok(path) => path,
+                    Err(error) => return Some(Err(error)),
+                }
+            } else {
+                let Some(source) = args.next() else {
+                    return Some(Err(
+                        "--webui-install-wallpaper requires a storage path".to_string()
+                    ));
+                };
+                if args.next().is_some() {
+                    return Some(Err(
+                        "--webui-install-wallpaper accepts exactly one path".to_string()
+                    ));
+                }
+                source
+            };
+            prepare_android_storage();
+            outcome(wallpaper::install_from_storage(&source))
+        }
+        "--webui-install-staged-wallpaper" => {
+            let Some(token) = args.next() else {
+                return Some(Err(
+                    "--webui-install-staged-wallpaper requires a token".to_string()
+                ));
+            };
+            if args.next().is_some() {
+                return Some(Err(
+                    "--webui-install-staged-wallpaper accepts exactly one token".to_string(),
+                ));
+            }
+            prepare_android_storage();
+            outcome(wallpaper::install_staged(&token))
+        }
+        _ => None,
+    }
+}
+
 fn main() {
     // WebUI diagnostics query the registered Binder services before entering
     // the long-running KeyMint server path. Initialize the Binder process
@@ -1047,7 +1341,7 @@ fn main() {
 
     if let Some(result) = handle_webui_security_bulletin_command() {
         match result {
-            Ok(output) => print!("{output}"),
+            Ok(output) => println!("{output}"),
             Err(error) => {
                 eprintln!("{error}");
                 std::process::exit(2);
@@ -1068,6 +1362,50 @@ fn main() {
     }
 
     if let Some(result) = handle_webui_keybox_command() {
+        match result {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if let Some(result) = handle_webui_rot_command() {
+        match result {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if let Some(result) = handle_webui_cloud_command(std::env::args()) {
+        match result {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if let Some(result) = handle_r1_command() {
+        match result {
+            Ok(output) => println!("{output}"),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+
+    if let Some(result) = handle_webui_wallpaper_command() {
         match result {
             Ok(output) => println!("{output}"),
             Err(error) => {
@@ -1162,20 +1500,25 @@ fn run() -> Result<()> {
     });
     repair_omk_data_files();
 
+    if let Err(error) = trust_pin::apply_at_boot() {
+        warn!("root of trust pinning failed: {error:#}");
+    }
+
     keybox::initialize().context("failed to initialize keybox runtime")?;
 
     info!("setting uid/gid={} role=keystore", KEYSTORE_UID);
     set_keystore_identity()?;
 
-    let injector_rpc_server = create_rpc_server()?;
+    // Started after the identity switch so its state file is written as keystore.
+    mirror_keybox::spawn_worker();
+    online_report::spawn_worker();
+
+    let server = create_rpc_server()?;
 
     crate::keymaster::metrics_store::update_keystore_crash_count();
 
     info!("starting thread pool");
     rsbinder::ProcessState::start_thread_pool();
-
-    info!("using injector backend");
-    let server = injector_rpc_server;
 
     info!("creating keystore service");
     let dev = KeystoreService::new_native_binder().context("failed to create omk service")?;
@@ -1304,5 +1647,40 @@ mod tests {
     fn webui_keybox_payload_rejects_too_many_chunks() {
         let chunks = vec!["YQ==".to_string(); WEBUI_KEYBOX_MAX_CHUNKS + 1];
         assert!(decode_webui_keybox_payload(chunks).is_err());
+    }
+
+    #[test]
+    fn webui_cloud_commands_reject_extra_arguments_before_storage_setup() {
+        for arguments in [
+            vec!["--webui-get-cloud-status", "extra"],
+            vec!["--webui-refresh-mirror-keybox", "extra"],
+            vec!["--webui-refresh-mirror-keybox", "1"],
+        ] {
+            assert!(
+                handle_webui_cloud_command(arguments.into_iter().map(str::to_string))
+                    .unwrap()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_status_text_collapses_and_caps() {
+        let dirty = "  err one\ntwo\u{7f}   ".repeat(100);
+        let clean = sanitize_status_text(&dirty);
+        assert!(!clean.contains('\n'));
+        assert!(!clean.contains('\u{7f}'));
+        assert!(clean.starts_with("err one two"));
+        assert_eq!(clean.chars().count(), 512);
+    }
+
+    #[test]
+    fn webui_cloud_status_keeps_the_webui_key_order() {
+        let output = webui_cloud_status().unwrap();
+        assert!(output.starts_with("{\"mirror\":{\"installed_sha256\":"));
+        assert!(output.contains("\"online\":{\"module_id\":"));
+        let online_pos = output.find("\"online\":{").unwrap();
+        let mirror_last_error_pos = output.find("\"last_error\"").unwrap();
+        assert!(online_pos > mirror_last_error_pos);
     }
 }

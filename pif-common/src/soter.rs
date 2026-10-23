@@ -5,6 +5,10 @@ use std::path::Path;
 
 pub const STATE_PATH: &str = "/data/misc/keystore/omk/data/soter_beta.conf";
 
+/// The service process the Soter Beta hook specializes. Restarting it is enough for a
+/// changed flag to take effect, because the companion value is read per specialization.
+pub const TARGET_PACKAGE: &str = "com.tencent.soter.soterserver";
+
 pub fn canonical_bytes(enabled: bool) -> &'static [u8] {
     if enabled {
         b"1"

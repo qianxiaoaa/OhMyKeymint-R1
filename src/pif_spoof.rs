@@ -30,7 +30,7 @@ const RAW_HOST: &str = "raw.githubusercontent.com";
 const MAX_REDIRECTS: usize = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const PROCESS_NAMES: [&[u8]; 2] = [b"com.google.android.gms.unstable", b"com.android.vending"];
+const PROCESS_NAMES: [&str; 2] = ["com.google.android.gms.unstable", "com.android.vending"];
 
 #[derive(Debug, Clone)]
 enum FeedResource {
@@ -261,6 +261,37 @@ fn persist_profile(path: &Path, profile: &PifProfile, uid: u32, gid: u32) -> Res
     Ok(())
 }
 
+/// The device identity fields that OMK's own KeyMint surfaces (attestation IDs,
+/// KeyMint hardware info) mirror while the stored profile spoofs build fields
+/// or properties.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PifIdentity {
+    pub brand: String,
+    pub device: String,
+    pub product: String,
+    pub manufacturer: String,
+    pub model: String,
+}
+
+fn alignment_for_profile(profile: Option<&PifProfile>) -> Option<PifIdentity> {
+    let profile = profile?;
+    (profile.spoof_build || profile.spoof_props).then(|| PifIdentity {
+        brand: profile.brand.clone(),
+        device: profile.device.clone(),
+        product: profile.product.clone(),
+        manufacturer: profile.manufacturer.clone(),
+        model: profile.model.clone(),
+    })
+}
+
+/// Loads the stored profile and reports the identity that OMK's own surfaces
+/// should mirror, so attestation certificates describe the same device the
+/// spoofed GMS properties advertise.
+pub(crate) fn aligned_identity() -> Result<Option<PifIdentity>> {
+    let profile = load_profile(Path::new(PROFILE_PATH))?;
+    Ok(alignment_for_profile(profile.as_ref()))
+}
+
 fn validate_profile_target(path: &Path) -> Result<()> {
     let parent = path
         .parent()
@@ -318,7 +349,13 @@ fn remove_profile(path: &Path) -> Result<()> {
 }
 
 fn refresh_target_processes() -> Result<()> {
-    let entries = fs::read_dir("/proc").context("failed to scan processes after PIF update")?;
+    refresh_processes(&PROCESS_NAMES)
+}
+
+/// Stops the named application processes so the Zygisk companion re-reads its per-process
+/// settings at the next specialization instead of waiting for a reboot.
+pub(crate) fn refresh_processes(names: &[&str]) -> Result<()> {
+    let entries = fs::read_dir("/proc").context("failed to scan processes after an update")?;
     let mut failures = Vec::new();
     for entry in entries.flatten() {
         let Some(pid) = entry
@@ -332,7 +369,7 @@ fn refresh_target_processes() -> Result<()> {
             continue;
         };
         let name = cmdline.split(|byte| *byte == 0).next().unwrap_or_default();
-        if !is_target_process_name(name) {
+        if !matches_any_process_name(name, names) {
             continue;
         }
         if unsafe { libc::kill(pid, libc::SIGKILL) } != 0 {
@@ -350,18 +387,18 @@ fn refresh_target_processes() -> Result<()> {
     if failures.is_empty() {
         Ok(())
     } else {
-        bail!(
-            "failed to stop PIF target process(es): {}",
-            failures.join("; ")
-        );
+        bail!("failed to stop target process(es): {}", failures.join("; "))
     }
 }
 
-fn is_target_process_name(name: &[u8]) -> bool {
-    PROCESS_NAMES.iter().any(|base| {
-        name == *base
-            || (name.len() > base.len() + 1 && name.starts_with(base) && name[base.len()] == b':')
-    })
+fn matches_any_process_name(name: &[u8], bases: &[&str]) -> bool {
+    bases.iter().any(|base| matches_process_name(name, base))
+}
+
+fn matches_process_name(name: &[u8], base: &str) -> bool {
+    let base = base.as_bytes();
+    name == base
+        || (name.len() > base.len() + 1 && name.starts_with(base) && name[base.len()] == b':')
 }
 
 #[cfg(test)]
@@ -499,7 +536,7 @@ mod tests {
             b"com.android.vending:instant".as_slice(),
         ] {
             assert!(
-                is_target_process_name(name),
+                matches_any_process_name(name, &PROCESS_NAMES),
                 "{}",
                 String::from_utf8_lossy(name)
             );
@@ -512,10 +549,36 @@ mod tests {
             b"com.android.vending/child".as_slice(),
         ] {
             assert!(
-                !is_target_process_name(name),
+                !matches_any_process_name(name, &PROCESS_NAMES),
                 "{}",
                 String::from_utf8_lossy(name)
             );
         }
+    }
+
+    #[test]
+    fn identity_alignment_mirrors_the_profile_fields() {
+        let profile = sample_profile();
+        let identity = alignment_for_profile(Some(&profile)).unwrap();
+        assert_eq!(identity.brand, profile.brand);
+        assert_eq!(identity.device, profile.device);
+        assert_eq!(identity.product, profile.product);
+        assert_eq!(identity.manufacturer, profile.manufacturer);
+        assert_eq!(identity.model, profile.model);
+    }
+
+    #[test]
+    fn identity_alignment_requires_at_least_one_spoof_switch() {
+        let mut profile = sample_profile();
+        profile.spoof_build = true;
+        profile.spoof_props = false;
+        assert!(alignment_for_profile(Some(&profile)).is_some());
+        profile.spoof_build = false;
+        profile.spoof_props = true;
+        assert!(alignment_for_profile(Some(&profile)).is_some());
+        profile.spoof_build = false;
+        profile.spoof_props = false;
+        assert_eq!(alignment_for_profile(Some(&profile)), None);
+        assert_eq!(alignment_for_profile(None), None);
     }
 }

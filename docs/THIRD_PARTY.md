@@ -138,3 +138,10 @@ CDLA-Permissive-2.0. These dependencies are built into the existing `keymint`
 helper; no device-provided `curl` or `wget` is used. Each action has a separate
 exact host and path allowlist, and redirects are validated before another
 request is made.
+
+## Bundled wallpaper image
+
+`webui/public/assets/wallpaper/default.jpg` is the default page background of
+the WebUI. The image was supplied by the fork author and is redistributed inside
+the module so that the interface never depends on a network fetch for its
+background. It is an asset, not code, and carries no third-party license terms.

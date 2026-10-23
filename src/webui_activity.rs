@@ -29,6 +29,10 @@ enum ActivityAction {
     SecurityPatchRestored,
     PifEnabled,
     PifDisabled,
+    CloudKeyboxApplied,
+    RotRepinned,
+    MirrorKeyboxApplied,
+    OnlineReported,
     // Kept for deserializing existing history; new records are not accepted.
     AdbDisablerChanged,
 }
@@ -43,6 +47,10 @@ impl ActivityAction {
             "security_patch_restored" => Ok(Self::SecurityPatchRestored),
             "pif_enabled" => Ok(Self::PifEnabled),
             "pif_disabled" => Ok(Self::PifDisabled),
+            "cloud_keybox_applied" => Ok(Self::CloudKeyboxApplied),
+            "rot_repinned" => Ok(Self::RotRepinned),
+            "mirror_keybox_applied" => Ok(Self::MirrorKeyboxApplied),
+            "online_reported" => Ok(Self::OnlineReported),
             _ => bail!("unsupported WebUI activity action"),
         }
     }
@@ -179,6 +187,8 @@ mod tests {
             ),
             ("pif_enabled", ActivityAction::PifEnabled),
             ("pif_disabled", ActivityAction::PifDisabled),
+            ("mirror_keybox_applied", ActivityAction::MirrorKeyboxApplied),
+            ("online_reported", ActivityAction::OnlineReported),
         ] {
             assert_eq!(ActivityAction::parse(name).unwrap(), action);
             assert_eq!(

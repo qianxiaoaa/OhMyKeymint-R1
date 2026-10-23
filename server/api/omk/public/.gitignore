@@ -1,0 +1,5 @@
+# Web 根目录：index.php 是源码（前端控制器），其余为更新脚本运行时生成，不入库。
+*
+!.gitignore
+!.gitkeep
+!index.php

@@ -3,6 +3,10 @@
 # KernelSU runs this script before removing the module directory. Keep the
 # cleanup limited to OMK's two persistent roots; disabling a module must not
 # remove data.
+# Magisk removes the module directory itself but keeps /data untouched and runs
+# this script on a module whose files are already gone; returning here without
+# touching OMK's persistent data lets the user reinstall without losing their
+# keybox and configuration.
 case "${KSU:-}" in
   true|1) ;;
   *) exit 0 ;;

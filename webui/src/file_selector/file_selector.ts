@@ -1,5 +1,5 @@
 import { exec } from 'kernelsu-alt'
-import { MAX_KEYBOX_XML_BYTES } from '../cli'
+import { MAX_KEYBOX_XML_BYTES, MAX_WALLPAPER_BYTES } from '../cli'
 import { i18n } from '../i18n'
 
 const STORAGE_ROOT = '/storage/emulated/0'
@@ -14,12 +14,52 @@ export interface FileEntry {
   isDirectory: boolean
 }
 
-export interface SelectedFile {
+export interface SelectedContents {
+  kind: 'contents'
   name: string
   contents: Uint8Array
 }
 
+export interface SelectedPath {
+  kind: 'path'
+  name: string
+  path: string
+}
+
+export type SelectedFile = SelectedContents | SelectedPath
+
 type Listener = () => void
+
+export interface FileSelectorOptions {
+  extensions: readonly string[]
+  maxBytes?: number
+  wrongTypeKey?: string
+  tooLargeKey?: string
+  emptyKey?: string
+  /** Resolve the storage path instead of the bytes, for callers that copy the
+   * file on the device (a large picture must not cross the command channel). */
+  pathOnly?: boolean
+}
+
+interface Messages {
+  wrongType: string
+  tooLarge: string
+  empty: string
+}
+
+const KEYBOX_MESSAGES: Messages = {
+  wrongType: 'prompt_keybox_xml_required',
+  tooLarge: 'prompt_keybox_too_large',
+  empty: 'replace_keybox_storage_empty',
+}
+
+function resolveMessages(options: FileSelectorOptions): Messages {
+  return {
+    wrongType: options.wrongTypeKey ?? KEYBOX_MESSAGES.wrongType,
+    tooLarge: options.tooLargeKey ?? KEYBOX_MESSAGES.tooLarge,
+    empty: options.emptyKey ?? KEYBOX_MESSAGES.empty,
+  }
+}
 
 interface PendingSelection {
   token: number
@@ -42,8 +82,9 @@ function isSafeEntryName(name: string): boolean {
     && !/[\\/\u0000-\u001f\u007f]/.test(name)
 }
 
-function hasFileExtension(name: string, extension: string): boolean {
-  return name.toLowerCase().endsWith(`.${extension}`)
+function hasFileExtension(name: string, extensions: readonly string[]): boolean {
+  const lower = name.toLowerCase()
+  return extensions.some(extension => lower.endsWith(`.${extension}`))
 }
 
 function joinStoragePath(parent: string, name: string): string | null {
@@ -72,7 +113,7 @@ function decodeBase64(value: string, maxBytes: number): Uint8Array {
   return bytes
 }
 
-function parseListing(value: string, extension: string): FileEntry[] {
+function parseListing(value: string, extensions: readonly string[]): FileEntry[] {
   const bytes = decodeBase64(value, MAX_LIST_OUTPUT_BYTES)
   const entries: FileEntry[] = []
   let offset = 0
@@ -100,7 +141,7 @@ function parseListing(value: string, extension: string): FileEntry[] {
       throw new Error('storage command returned an invalid file name')
     }
     if (!isSafeEntryName(name)) throw new Error('storage command returned an invalid file name')
-    if (kind === 0x66 && !hasFileExtension(name, extension)) {
+    if (kind === 0x66 && !hasFileExtension(name, extensions)) {
       throw new Error('storage command returned an invalid file')
     }
     entries.push({ name, isDirectory: kind === 0x64 })
@@ -122,8 +163,10 @@ function shellExtensionPattern(extension: string): string {
   }).join('')
 }
 
-function buildListCommand(path: string, extension: string): string {
-  const extensionPattern = shellExtensionPattern(extension)
+function buildListCommand(path: string, extensions: readonly string[]): string {
+  const extensionPattern = extensions
+    .map(extension => `*.${shellExtensionPattern(extension)}`)
+    .join('|')
   const script = [
     `root=${shellQuote(STORAGE_ROOT)}`,
     `target=${shellQuote(path)}`,
@@ -153,7 +196,7 @@ function buildListCommand(path: string, extension: string): string {
     String.raw`    printf '%s\000%s\000' d "$name"`,
     '  elif [ -f "$entry" ]; then',
     '    case "$name" in',
-    `      *.${extensionPattern}) printf '%s\\000%s\\000' f "$name" ;;`,
+    `      ${extensionPattern}) printf '%s\\000%s\\000' f "$name" ;;`,
     '      *) continue ;;',
     '    esac',
     '  else',
@@ -204,17 +247,23 @@ function buildReadCommand(path: string, maxBytes: number): string {
   return `/system/bin/sh -c ${shellQuote(script)}`
 }
 
-async function readBrowserFile(file: File, extension: string, maxBytes: number): Promise<SelectedFile> {
-  if (!hasFileExtension(file.name, extension)) throw new Error(i18n.t('prompt_keybox_xml_required'))
-  if (file.size > maxBytes) throw new Error(i18n.t('prompt_keybox_too_large'))
+async function readBrowserFile(
+  file: File,
+  extensions: readonly string[],
+  maxBytes: number,
+  messages: Messages,
+): Promise<SelectedContents> {
+  if (!hasFileExtension(file.name, extensions)) throw new Error(i18n.t(messages.wrongType))
+  if (file.size > maxBytes) throw new Error(i18n.t(messages.tooLarge))
   const contents = new Uint8Array(await file.slice(0, maxBytes + 1).arrayBuffer())
-  if (contents.byteLength > maxBytes) throw new Error(i18n.t('prompt_keybox_too_large'))
-  return { name: file.name, contents }
+  if (contents.byteLength > maxBytes) throw new Error(i18n.t(messages.tooLarge))
+  return { kind: 'contents', name: file.name, contents }
 }
 
 async function pickWithSystem(
-  extension: string,
+  extensions: readonly string[],
   maxBytes: number,
+  messages: Messages,
 ): Promise<{ supported: boolean, selected: SelectedFile | null }> {
   return new Promise((resolve, reject) => {
     const input = document.createElement('input')
@@ -256,7 +305,7 @@ async function pickWithSystem(
       const file = input.files?.[0]
       if (!file) return finish(null)
       clearTimer()
-      void readBrowserFile(file, extension, maxBytes).then(finish, fail)
+      void readBrowserFile(file, extensions, maxBytes, messages).then(finish, fail)
     }
     const scheduleCancel = (): void => {
       if (settled || !pickerWasBackgrounded) return
@@ -301,8 +350,10 @@ export class FileSelector {
   // after returning focus; opening a second input during that window loses
   // the first provider callback and can resolve the wrong request.
   #systemPickerActive = false
-  #extension = 'xml'
+  #extensions: readonly string[] = ['xml']
   #maxBytes = MAX_KEYBOX_XML_BYTES
+  #messages: Messages = KEYBOX_MESSAGES
+  #pathOnly = false
   #pathStack: string[] = [STORAGE_ROOT]
   #open = false
   #loading = false
@@ -322,24 +373,26 @@ export class FileSelector {
     return () => this.#listeners.delete(listener)
   }
 
-  async getSystemFileContent(extension: string, maxBytes = MAX_KEYBOX_XML_BYTES): Promise<SelectedFile | null> {
-    const normalized = this.#validate(extension, maxBytes)
+  async getSystemFileContent(options: FileSelectorOptions): Promise<SelectedFile | null> {
+    const contentsOptions: FileSelectorOptions = { ...options, pathOnly: false }
+    const maxBytes = this.#validate(contentsOptions)
     if (this.#systemPickerActive) return null
     this.#systemPickerActive = true
     let systemResult: { supported: boolean, selected: SelectedFile | null }
     try {
-      systemResult = await pickWithSystem(normalized, maxBytes)
+      systemResult = await pickWithSystem(this.#extensions, maxBytes, this.#messages)
     } finally {
       this.#systemPickerActive = false
     }
     if (systemResult.supported) return systemResult.selected
-    return this.getFileContent(normalized, maxBytes)
+    // The native picker is unavailable, so fall back to the in-app browser and
+    // keep whatever result mode the caller asked for.
+    return this.getFileContent(options)
   }
 
-  getFileContent(extension: string, maxBytes = MAX_KEYBOX_XML_BYTES): Promise<SelectedFile | null> {
-    const normalized = this.#validate(extension, maxBytes)
+  getFileContent(options: FileSelectorOptions): Promise<SelectedFile | null> {
+    const maxBytes = this.#validate(options)
     this.cancel()
-    this.#extension = normalized
     this.#maxBytes = maxBytes
     this.#currentPath = INITIAL_PATH
     this.#pathStack = [STORAGE_ROOT, INITIAL_PATH]
@@ -363,7 +416,7 @@ export class FileSelector {
     this.#status = i18n.t('replace_keybox_storage_loading')
     this.#emit()
     try {
-      const result = await pickWithSystem(this.#extension, this.#maxBytes)
+      const result = await pickWithSystem(this.#extensions, this.#maxBytes, this.#messages)
       if (this.#pending?.token !== pending.token || !result.supported) return
       if (result.selected) this.#finish(result.selected)
     } catch (error) {
@@ -389,6 +442,8 @@ export class FileSelector {
       this.#currentPath = path
       this.#pathStack.push(path)
       void this.#listDirectory(path, pending.token)
+    } else if (this.#pathOnly) {
+      this.#finish({ kind: 'path', name: entry.name, path })
     } else {
       void this.#readLocalFile(path, entry.name, pending.token)
     }
@@ -410,13 +465,22 @@ export class FileSelector {
     }
   }
 
-  #validate(extension: string, maxBytes: number): string {
-    const normalized = extension.trim().replace(/^\./, '').toLowerCase()
-    if (!/^[a-z0-9]{1,16}$/.test(normalized)) throw new Error('Invalid file extension')
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_KEYBOX_XML_BYTES) {
+  #validate(options: FileSelectorOptions): number {
+    if (options.extensions.length === 0) throw new Error('Invalid file extension')
+    const extensions = options.extensions.map(extension => {
+      const normalized = extension.trim().replace(/^\./, '').toLowerCase()
+      if (!/^[a-z0-9]{1,16}$/.test(normalized)) throw new Error('Invalid file extension')
+      return normalized
+    })
+    const maxBytes = options.maxBytes ?? MAX_KEYBOX_XML_BYTES
+    // The wallpaper limit is the largest asset any caller installs through here.
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_WALLPAPER_BYTES) {
       throw new Error('Invalid file size limit')
     }
-    return normalized
+    this.#extensions = extensions
+    this.#messages = resolveMessages(options)
+    this.#pathOnly = options.pathOnly === true
+    return maxBytes
   }
 
   async #loadInitialPath(token: number): Promise<void> {
@@ -435,11 +499,11 @@ export class FileSelector {
     this.#entries = []
     this.#emit()
     try {
-      const result = await exec(buildListCommand(path, this.#extension))
+      const result = await exec(buildListCommand(path, this.#extensions))
       if (this.#pending?.token !== token || request !== this.#request) return false
       if (result.errno !== 0) throw commandError(result.errno, result.stderr)
-      this.#entries = parseListing(result.stdout, this.#extension)
-      this.#status = this.#entries.length === 0 ? i18n.t('replace_keybox_storage_empty') : ''
+      this.#entries = parseListing(result.stdout, this.#extensions)
+      this.#status = this.#entries.length === 0 ? i18n.t(this.#messages.empty) : ''
       this.#loading = false
       this.#emit()
       return true
@@ -463,10 +527,10 @@ export class FileSelector {
       const result = await exec(buildReadCommand(path, this.#maxBytes))
       if (this.#pending?.token !== token || request !== this.#request) return
       if (result.errno !== 0) {
-        if (result.errno === 3) throw new Error(i18n.t('prompt_keybox_too_large'))
+        if (result.errno === 3) throw new Error(i18n.t(this.#messages.tooLarge))
         throw commandError(result.errno, result.stderr)
       }
-      this.#finish({ name, contents: decodeBase64(result.stdout, this.#maxBytes) })
+      this.#finish({ kind: 'contents', name, contents: decodeBase64(result.stdout, this.#maxBytes) })
     } catch (error) {
       if (this.#pending?.token !== token) return
       console.error('Unable to read shared-storage file:', error)

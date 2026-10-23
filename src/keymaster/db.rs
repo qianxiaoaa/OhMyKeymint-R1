@@ -1796,6 +1796,39 @@ impl KeystoreDB {
         .context(ks_err!())
     }
 
+    /// R1: removes every key entry held by this database. Used when the effective
+    /// root of trust changed, because none of the stored blobs can be decrypted
+    /// again and keeping them only produces permanent `InvalidKeyBlob` failures.
+    pub fn purge_all_keys(&mut self) -> Result<usize> {
+        let _wp = wd::watch("KeystoreDB::purge_all_keys");
+
+        self.with_transaction(Immediate("TX_purge_all_keys"), |tx| {
+            let mut stmt = tx
+                .prepare("SELECT id FROM persistent.keyentry;")
+                .context("Failed to prepare key purge query.")?;
+            let mut rows = stmt.query([]).context("Failed to query keys for purge.")?;
+            let mut key_ids = Vec::new();
+            db_utils::with_rows_extract_all(&mut rows, |row| {
+                key_ids.push(row.get(0)?);
+                Ok(())
+            })
+            .context("Failed to collect key ids for purge.")?;
+
+            let key_count = key_ids.len();
+            log::warn!("purging {key_count} key entries bound to a stale root of trust");
+
+            let mut notify_gc = key_count > 0;
+            for key_id in key_ids {
+                notify_gc = Self::remove_key_rows(tx, key_id)
+                    .context("Purging key entry for root of trust change.")?
+                    || notify_gc;
+            }
+
+            Ok(key_count).do_gc(notify_gc)
+        })
+        .context(ks_err!())
+    }
+
     pub fn terminate_uuid(&mut self, km_uuid: &Uuid) -> Result<()> {
         log::info!("terminating all keys created by uuid={km_uuid:0x?}");
         let _wp = wd::watch("KeystoreDB::terminate_uuid");

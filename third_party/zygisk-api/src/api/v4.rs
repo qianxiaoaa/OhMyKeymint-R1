@@ -1,6 +1,6 @@
 use core::{ffi, mem, ops::Deref, ptr::NonNull};
 use std::os::{
-    fd::{FromRawFd, RawFd},
+    fd::{FromRawFd, OwnedFd, RawFd},
     unix::net::UnixStream,
 };
 
@@ -31,6 +31,34 @@ impl super::ZygiskApi<'_, V4> {
                 Ok(f(&mut companion_sock))
             }
         }
+    }
+
+    /// Connects to the module's root companion process without wrapping the
+    /// socket in a [`UnixStream`], so the caller controls when the descriptor
+    /// is released. Needed for sessions that must outlive the specialize
+    /// callback, where the RAII stream returned by [`with_companion`] would be
+    /// dropped when the closure returns.
+    ///
+    /// # Safety
+    ///
+    /// The returned [`OwnedFd`] must be closed exactly once.
+    #[inline(always)]
+    pub unsafe fn connect_companion_owned(&mut self) -> Result<OwnedFd, ZygiskError> {
+        let api_dispatch = unsafe { self.dispatch() };
+
+        match unsafe { (api_dispatch.connect_companion_fn)(api_dispatch.base.this) } {
+            -1 => Err(ZygiskError::ConnectCompanionError),
+            fd => Ok(unsafe { OwnedFd::from_raw_fd(fd) }),
+        }
+    }
+
+    /// Marks a descriptor as exempt from Zygisk's descriptor sanitization so it
+    /// survives app specialization and the loader's cleanup between callbacks.
+    #[inline(always)]
+    pub fn exempt_fd(&mut self, fd: RawFd) -> bool {
+        let api_dispatch = unsafe { self.dispatch() };
+
+        (api_dispatch.exempt_fd_fn)(fd)
     }
 
     #[inline(always)]

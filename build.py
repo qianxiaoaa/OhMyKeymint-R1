@@ -26,6 +26,16 @@ REPO_ROOT = Path(__file__).resolve().parent
 TARGET_ROOT = REPO_ROOT / "target"
 DEFAULT_PLATFORM = 24
 
+# R1 identity: the KSU manager, the installer and the WebUI show
+# `${MODULE_DISPLAY_PREFIX}-<version>-<hash>`; zip and GitHub release files keep the space-free
+# `${MODULE_NAME_PREFIX}`. versionCode is a release number rather than a commit count so a
+# rebuilt tree cannot silently downgrade an installed module.
+MODULE_NAME_PREFIX = "OhMyKeymint-R1"
+MODULE_DISPLAY_PREFIX = "Oh My Keymint-R1"
+SHORT_HASH_LENGTH = 7
+DEFAULT_VERSION_CODE = 106
+VERSION_CODE_ENV = "OMK_VERSION_CODE"
+
 ABI_TO_TARGET = {
     "arm64-v8a": "aarch64-linux-android",
     "x86_64": "x86_64-linux-android",
@@ -103,19 +113,11 @@ def get_version_from_cargo_toml() -> str:
     return cargo_toml["package"]["version"]
 
 
-def get_git_commit_count() -> str:
-    result = subprocess.run(
-        ["git", "rev-list", "--count", "HEAD"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError("Failed to get git commit count")
-    git_count = result.stdout.strip()
-    if not git_count.isdigit():
-        raise ValueError(f"Git commit count must be numeric only, got: {git_count}")
-    return git_count
+def get_version_code() -> str:
+    raw = os.environ.get(VERSION_CODE_ENV, "").strip() or str(DEFAULT_VERSION_CODE)
+    if not raw.isdigit():
+        raise ValueError(f"{VERSION_CODE_ENV} must be numeric only, got: {raw}")
+    return raw
 
 
 def get_git_commit_hash() -> str:
@@ -339,10 +341,14 @@ def configure_template_for_abi(stage_dir: Path, abi: str) -> None:
     print(f"Updated customize.sh supported ABI to {supported_arch}")
 
 
+def release_display_name(version: str, git_hash: str) -> str:
+    return f"{MODULE_DISPLAY_PREFIX}-{version}-{git_hash[:SHORT_HASH_LENGTH]}"
+
+
 def modify_module_prop(
     stage_dir: Path,
     version: str,
-    git_count: str,
+    version_code: str,
     git_hash: str,
     release: bool,
 ) -> None:
@@ -351,12 +357,29 @@ def modify_module_prop(
         raise FileNotFoundError(f"module.prop not found at {module_prop_path}")
 
     build_type = "release" if release else "debug"
-    version_name = f"{version} ({git_count}-{git_hash}-{build_type})"
+    release_id = release_display_name(version, git_hash)
+    version_name = f"{version} ({version_code}-{git_hash}-{build_type})"
     content = module_prop_path.read_text(encoding="utf-8")
     content = content.replace("${versionName}", version_name)
-    content = content.replace("${versionCode}", git_count)
+    content = content.replace("${versionCode}", version_code)
+    content = content.replace("${moduleName}", release_id)
+    # service.sh asks the daemon to overwrite this line once the boot self-check passes,
+    # so the placeholder has to stay recognisable in the manager before that happens.
+    content = content.replace("${moduleDescription}", f"{release_id} 等待开机自检")
     write_text_lf(module_prop_path, content)
-    print(f"Updated module.prop: versionName={version_name}, versionCode={git_count}")
+    print(
+        f"Updated module.prop: versionName={version_name}, versionCode={version_code}, "
+        f"name={release_id}"
+    )
+
+
+def stamp_webroot_title(stage_dir: Path, title: str) -> None:
+    # Only the staged copy: the committed webroot must stay identical to a fresh WebUI build.
+    config_path = stage_dir / "webroot" / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["title"] = title
+    write_text_lf(config_path, json.dumps(config, ensure_ascii=False, indent=4) + "\n")
+    print(f"Updated webroot/config.json: title={title}")
 
 
 def generate_hash_for_file(file_path: Path) -> None:
@@ -395,29 +418,42 @@ def generate_webroot_manifest(stage_dir: Path) -> None:
     print(f"Created WebUI manifest with {len(assets)} asset(s)")
 
 
-def delete_old_zips(release: bool, selected_abis: list[str], version: str) -> None:
+def delete_old_zips(
+    release: bool,
+    selected_abis: list[str],
+    version: str,
+    version_code: str,
+) -> None:
     build_type = "release" if release else "debug"
     old_zips: set[str] = set()
     for abi in selected_abis:
         # Remove packages produced by the previous naming scheme as well as
         # packages for this version produced by an earlier build.  The latter
         # is useful when the working tree hash changes between builds.
-        old_pattern = TARGET_ROOT / f"OhMyKeymint-{build_type}-{abi}-*.zip"
-        old_zips.update(glob.glob(os.fspath(old_pattern)))
+        for pattern in (
+            f"OhMyKeymint-{build_type}-{abi}-*.zip",
+            f"OhMyKeymint-{version}-*-{build_type}.zip",
+            f"{MODULE_NAME_PREFIX}-{version}-*-{build_type}.zip",
+            f"{MODULE_NAME_PREFIX}-{version}-{version_code}-*-{abi}-{build_type}.zip",
+        ):
+            old_zips.update(glob.glob(os.fspath(TARGET_ROOT / pattern)))
 
-        if abi == "arm64-v8a":
-            new_pattern = TARGET_ROOT / f"OhMyKeymint-{version}-*-{build_type}.zip"
-            new_candidates = glob.glob(os.fspath(new_pattern))
-            # The arm64 package intentionally omits its ABI in the filename;
-            # retain a separately built x86_64 package with the same version.
-            old_zips.update(
-                path
-                for path in new_candidates
-                if not path.endswith(f"-x86_64-{build_type}.zip")
+        if abi != "arm64-v8a":
+            continue
+        # The arm64 package intentionally omits its ABI in the filename; retain a
+        # separately built x86_64 package with the same version and version code.
+        # Restrict the glob to the current version code so older releases are
+        # never removed just because this build is arm64.
+        old_zips.update(
+            path
+            for path in glob.glob(
+                os.fspath(
+                    TARGET_ROOT
+                    / f"{MODULE_NAME_PREFIX}-{version}-{version_code}-*-{build_type}.zip"
+                )
             )
-        else:
-            new_pattern = TARGET_ROOT / f"OhMyKeymint-{version}-*-{abi}-{build_type}.zip"
-            old_zips.update(glob.glob(os.fspath(new_pattern)))
+            if not path.endswith(f"-x86_64-{build_type}.zip")
+        )
     if not old_zips:
         print(f"No old zip files found for build type {build_type} and ABIs {selected_abis}")
         return
@@ -432,18 +468,20 @@ def create_zip_package(
     *,
     stage_dir: Path,
     version: str,
-    git_count: str,
+    version_code: str,
     git_hash: str,
     abi: str,
     release: bool,
 ) -> Path:
     build_type = "release" if release else "debug"
-    # The default arm64 package follows the same version identity order as
-    # Trickystore: version, commit count, short commit hash, build type.  An
-    # explicit x86_64 build gets an ABI discriminator so separate ABI builds
-    # cannot overwrite one another.
+    # R1 package identity: prefix, version, release number, short commit hash, and
+    # build type.  An explicit x86_64 build gets an ABI discriminator so separate ABI
+    # builds cannot overwrite one another.
     abi_suffix = f"-{abi}" if abi != "arm64-v8a" else ""
-    zip_name = f"OhMyKeymint-{version}-{git_count}-{git_hash}{abi_suffix}-{build_type}.zip"
+    zip_name = (
+        f"{MODULE_NAME_PREFIX}-{version}-{version_code}-{git_hash}"
+        f"{abi_suffix}-{build_type}.zip"
+    )
     zip_path = TARGET_ROOT / zip_name
     print(f"Creating zip package: {zip_path}")
 
@@ -463,7 +501,7 @@ def build_package_for_abi(
     release: bool,
     platform: int,
     version: str,
-    git_count: str,
+    version_code: str,
     git_hash: str,
 ) -> Path:
     target = ABI_TO_TARGET[abi]
@@ -507,14 +545,15 @@ def build_package_for_abi(
         copy_binary(soterta_service, SOTERTA_SERVICE_NAME, abi, stage_dir)
         copy_zygisk_payload(pif_payload, abi, stage_dir)
 
-        modify_module_prop(stage_dir, version, git_count, git_hash, release)
+        modify_module_prop(stage_dir, version, version_code, git_hash, release)
         normalize_module_text_files(stage_dir)
         generate_webroot_manifest(stage_dir)
+        stamp_webroot_title(stage_dir, release_display_name(version, git_hash))
         generate_hash_files(stage_dir)
         return create_zip_package(
             stage_dir=stage_dir,
             version=version,
-            git_count=git_count,
+            version_code=version_code,
             git_hash=git_hash,
             abi=abi,
             release=release,
@@ -547,15 +586,15 @@ def main() -> None:
     args = parser.parse_args()
 
     version = get_version_from_cargo_toml()
-    git_count = get_git_commit_count()
+    version_code = get_version_code()
     git_hash = get_git_commit_hash()
     selected_abis = args.abis or ["arm64-v8a"]
 
-    print(f"Building OhMyKeymint version {version} (commit {git_count}, hash {git_hash})")
+    print(f"Building {MODULE_NAME_PREFIX} version {version} (code {version_code}, commit {git_hash})")
     print(f"Build mode: {'Release' if args.release else 'Debug'}")
     print(f"Target ABIs: {', '.join(selected_abis)}")
 
-    delete_old_zips(args.release, selected_abis, version)
+    delete_old_zips(args.release, selected_abis, version, version_code)
     built_packages = []
     for abi in selected_abis:
         built_packages.append(
@@ -564,7 +603,7 @@ def main() -> None:
                 release=args.release,
                 platform=args.platform,
                 version=version,
-                git_count=git_count,
+                version_code=version_code,
                 git_hash=git_hash,
             )
         )

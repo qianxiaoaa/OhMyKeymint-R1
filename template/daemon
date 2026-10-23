@@ -3,8 +3,14 @@
 MODDIR=${0%/*}
 STATE_DIR=/data/adb/omk
 RESTART_FILE=$STATE_DIR/restart.keymint
+# Keymint runs as the keystore user and cannot create files under /data/adb, so it
+# requests its own restart inside the module data directory.
 PEER_RESTART_FILE=$STATE_DIR/restart.injector
 RESTART_ALL_FILE=$STATE_DIR/restart.all
+# A restart is a file flag, so supervision only has to poll it. One tick costs a single
+# process wake-up; five seconds keeps a replaced keybox from being in use any longer.
+RESTART_POLL_INTERVAL=5
+DATA_RESTART_FILE=/data/misc/keystore/omk/data/restart.keymint
 
 export LD_LIBRARY_PATH="/apex/com.android.runtime/lib64:/apex/com.android.runtime/lib64/bionic:/system/lib64:/vendor/lib64:$LD_LIBRARY_PATH"
 
@@ -39,8 +45,8 @@ expand_shared_restart() {
 consume_restart_request() {
   expand_shared_restart
 
-  if [ -f "$RESTART_FILE" ]; then
-    rm -f "$RESTART_FILE"
+  if [ -f "$RESTART_FILE" ] || [ -f "$DATA_RESTART_FILE" ]; then
+    rm -f "$RESTART_FILE" "$DATA_RESTART_FILE"
     return 0
   fi
 
@@ -49,6 +55,26 @@ consume_restart_request() {
 
 cd "$MODDIR" || exit 1
 mkdir -p "$STATE_DIR"
+
+# Refresh the module manager's description after the cloud feed answers. This is
+# the daemon-side companion of service.sh's r1_self_check: a hot update replaces
+# the binary under /data/adb/omk without re-running service.sh, so the module card
+# would otherwise keep the install-time "waiting for boot self-check" text forever.
+r1_refresh_description() {
+  target=$1
+  # The manager card already shows the running verdict; nothing to refresh.
+  grep -q "已成功运行" "$MODDIR/module.prop" 2>/dev/null && return 0
+  attempt=1
+  while [ "$attempt" -le 6 ]; do
+    verdict=$("$target" --r1-boot-report 2>/dev/null)
+    case "$verdict" in
+      *'"ok":true'*) return 0 ;;
+    esac
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+  return 1
+}
 
 while true; do
   TARGET=$(find_module_keymint)
@@ -63,6 +89,24 @@ while true; do
   "$TARGET" "$@" &
   child_pid=$!
 
+  # After a hot update the module binary lives under /data/adb/omk and the boot
+  # self-check that stamps the "running" description only runs once via service.sh.
+  # Refresh the description whenever the cloud feed answers, so the manager shows
+  # the running verdict instead of the install-time placeholder. Bounded retries,
+  # then the previous text stays on screen and the daemon writes its own reasons
+  # to the keymint log.
+  # Only one refresh is in flight at a time. The variable survives across loop
+  # iterations (same shell), so a crash-looping keymint cannot stack concurrent
+  # --r1-boot-report probes.
+  refresh_running=0
+  if [ -n "$refresh_pid" ] && kill -0 "$refresh_pid" 2>/dev/null; then
+    refresh_running=1
+  fi
+  if [ "$refresh_running" -eq 0 ]; then
+    r1_refresh_description "$TARGET" &
+    refresh_pid=$!
+  fi
+
   while kill -0 "$child_pid" 2>/dev/null; do
     if consume_restart_request; then
       echo "[keymint-daemon] restart requested"
@@ -73,7 +117,7 @@ while true; do
       fi
       break
     fi
-    sleep 2
+    sleep "$RESTART_POLL_INTERVAL"
   done
 
   wait "$child_pid"

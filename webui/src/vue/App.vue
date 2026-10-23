@@ -15,15 +15,19 @@ import { AppList, type AppListSnapshot } from '../app_list/app_list'
 import { appearance } from '../appearance'
 import {
   Cli,
+  MAX_WALLPAPER_BYTES,
+  WALLPAPER_EXTENSIONS,
+  type CloudStatus,
   type DiagnosticsState,
   type KeyboxInspector,
   type KeyboxRevocationStatus,
 } from '../cli'
 import { ConfigOhMyKeyMint } from '../config_ohmykeymint'
-import { FileSelector } from '../file_selector/file_selector'
+import { FileSelector, type SelectedContents } from '../file_selector/file_selector'
 import { History } from '../history'
 import { i18n } from '../i18n'
 import { fetchLatestSecurityPatch } from '../security_patch'
+import { wallpaper } from '../wallpaper'
 import { isDev } from '../utils/dev'
 import HomeView, { type KeyboxStatus, type ModuleStatus, type TeeStatus } from './HomeView.vue'
 import PifFingerprintDialog from './PifFingerprintDialog.vue'
@@ -41,6 +45,25 @@ const appList = new AppList(config)
 const fileSelector = new FileSelector()
 const history = new History()
 
+const DEV_CLOUD_STATUS: CloudStatus = {
+  mirror: {
+    installed_sha256: 'a'.repeat(64),
+    installed_source: 'mirror',
+    last_fetch_unix: Math.floor(Date.now() / 1000),
+    last_sha256: 'a'.repeat(64),
+    last_source: 'yurikey',
+    last_status: 'applied',
+    last_error: '',
+  },
+  online: {
+    module_id: `omk-${'b'.repeat(32)}`,
+    last_report_unix: Math.floor(Date.now() / 1000),
+    last_status: 'ok',
+    last_error: '',
+    interval_seconds: 1800,
+  },
+}
+
 const pageIndex = ref(0)
 const pageDirection = ref(1)
 const pageScrollPositions = [0, 0, 0]
@@ -55,16 +78,18 @@ const keyboxRevocation = ref<KeyboxRevocationStatus>('not_checked')
 const keyboxInspector = ref<KeyboxInspector | null>(null)
 const diagnostics = ref<DiagnosticsState | null>(null)
 const diagnosticsStatus = ref<'loading' | 'ready' | 'error'>('loading')
+const cloudStatus = ref<CloudStatus | null>(null)
 const teeStatus = ref<TeeStatus>('loading')
 const securityPatch = ref<string | null>(null)
 const spoofedDevice = ref<string | null | undefined>(undefined)
+const moduleName = ref('Oh My Keymint-R1')
 const securityPatchBusy = ref<'sync' | 'restore' | null>(null)
+const keyboxBusy = ref<'install' | 'mirror' | null>(null)
 const soterOpen = ref(false)
 const soterHalOpen = ref(false)
 const pifOpen = ref(false)
 const keyboxOpen = ref(false)
-const selectedKeybox = ref<{ name: string, contents: Uint8Array } | null>(null)
-const keyboxBusy = ref(false)
+const selectedKeybox = ref<SelectedContents | null>(null)
 const targetsView = ref<InstanceType<typeof TargetsView> | null>(null)
 const settingsView = ref<InstanceType<typeof SettingsView> | null>(null)
 const pifDialog = ref<InstanceType<typeof PifFingerprintDialog> | null>(null)
@@ -318,6 +343,21 @@ async function saveTargets(): Promise<void> {
   }
 }
 
+// The version and commit hash exist only in the installed module.prop: the
+// committed webroot has to stay byte-identical to a fresh WebUI build.
+async function refreshModuleName(): Promise<void> {
+  if (isDev()) {
+    moduleName.value = 'Oh My Keymint-R1 (dev)'
+  } else {
+    try {
+      moduleName.value = await cli.getModuleName()
+    } catch (error) {
+      console.error('Unable to load the OMK module name:', error)
+    }
+  }
+  document.title = moduleName.value
+}
+
 async function refreshIdentity(force = false): Promise<void> {
   // The refresh path always queries the current backend state; keep the
   // parameter for callers that request an explicit refresh after a mutation.
@@ -395,6 +435,7 @@ async function refreshDiagnostics(): Promise<void> {
       rkp_tee: { status: 'available', pid: null },
       rkp_strongbox: { status: 'unavailable', pid: null },
       selinux: 'enforcing',
+      rot: { status: 'ok', mode: 'pinned', pinned: true, drift: false },
     }
     diagnosticsStatus.value = 'ready'
     return
@@ -416,8 +457,8 @@ async function refreshDiagnostics(): Promise<void> {
 
 async function chooseKeybox(): Promise<void> {
   try {
-    const selected = await fileSelector.getSystemFileContent('xml')
-    if (selected) {
+    const selected = await fileSelector.getSystemFileContent({ extensions: ['xml'] })
+    if (selected?.kind === 'contents') {
       selectedKeybox.value = selected
       keyboxOpen.value = true
     }
@@ -429,7 +470,7 @@ async function chooseKeybox(): Promise<void> {
 async function installKeybox(): Promise<void> {
   const selected = selectedKeybox.value
   if (!selected || keyboxBusy.value) return
-  keyboxBusy.value = true
+  keyboxBusy.value = 'install'
   try {
     if (!isDev()) await cli.installKeybox(selected.contents)
     notify(i18n.t('prompt_keybox_replaced'))
@@ -439,8 +480,70 @@ async function installKeybox(): Promise<void> {
   } catch (error) {
     notify(i18n.t('prompt_keybox_replace_error', error instanceof Error ? error.message : String(error)), true)
   } finally {
-    keyboxBusy.value = false
+    keyboxBusy.value = null
   }
+}
+
+async function refreshMirrorKeybox(): Promise<void> {
+  if (keyboxBusy.value !== null) return
+  keyboxBusy.value = 'mirror'
+  try {
+    const report = isDev()
+      ? { ok: true, applied: true, source: 'yurikey', sha256: 'a'.repeat(64), size: 4096, note: 'mirror keybox installed' }
+      : await cli.refreshMirrorKeybox()
+    notify(
+      i18n.t(
+        report.ok && report.applied
+          ? 'prompt_mirror_keybox_applied'
+          : report.ok
+            ? 'prompt_mirror_keybox_unchanged'
+            : 'prompt_mirror_keybox_failed',
+      ),
+      !report.ok,
+    )
+    await Promise.all([refreshIdentity(true), refreshCloud()])
+  } catch (error) {
+    console.error('Unable to refresh the mirror Keybox:', error)
+    notify(i18n.t('prompt_mirror_keybox_failed'), true)
+  } finally {
+    keyboxBusy.value = null
+  }
+}
+
+async function refreshCloud(): Promise<void> {
+  try {
+    cloudStatus.value = isDev() ? DEV_CLOUD_STATUS : await cli.getCloudStatus()
+  } catch (error) {
+    console.error('Unable to load OMK cloud status:', error)
+    cloudStatus.value = null
+  }
+}
+
+async function chooseWallpaper(): Promise<void> {
+  try {
+    // The system image picker is preferred; the in-app browser is only used as
+    // a fallback when the WebView cannot launch the native picker.
+    const selected = await fileSelector.getSystemFileContent({
+      extensions: WALLPAPER_EXTENSIONS,
+      maxBytes: MAX_WALLPAPER_BYTES,
+      wrongTypeKey: 'prompt_wallpaper_image_required',
+      tooLargeKey: 'prompt_wallpaper_too_large',
+      emptyKey: 'replace_wallpaper_storage_empty',
+    })
+    if (!selected) return
+    const installed = selected.kind === 'contents'
+      ? await wallpaper.installBytes(cli, selected.contents)
+      : await wallpaper.installFromStorage(cli, selected.path)
+    if (installed) notify(i18n.t('prompt_wallpaper_applied'))
+    else notify(wallpaper.status, true)
+  } catch (error) {
+    notify(error instanceof Error ? error.message : String(error), true)
+  }
+}
+
+async function resetWallpaper(): Promise<void> {
+  if (await wallpaper.reset(cli)) notify(i18n.t('prompt_wallpaper_reset'))
+  else notify(wallpaper.status, true)
 }
 
 async function syncPatch(restore: boolean): Promise<void> {
@@ -468,6 +571,7 @@ function onTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': openTargets(); break
     case 'installKeybox': void chooseKeybox(); break
+    case 'refreshMirrorKeybox': void refreshMirrorKeybox(); break
     case 'syncSecurityPatch': void syncPatch(false); break
     case 'restoreSecurityPatch': void syncPatch(true); break
     case 'openSoterBeta': soterOpen.value = true; break
@@ -509,7 +613,14 @@ onMounted(async () => {
       history.consume('file-selector')
     }
   })
-  await Promise.all([reloadApps(true), refreshIdentity(), refreshDiagnostics()])
+  await Promise.all([
+    reloadApps(true),
+    refreshModuleName(),
+    refreshIdentity(),
+    refreshDiagnostics(),
+    refreshCloud(),
+    wallpaper.load(cli),
+  ])
 })
 
 onBeforeUnmount(() => {
@@ -553,6 +664,11 @@ watch(targetsOpen, open => {
     }
   })
 })
+
+// Pages stay mounted behind v-show; root-level chrome reads the visible page here.
+watch([pageIndex, targetsOpen], ([index, targets]) => {
+  document.documentElement.dataset.page = targets ? 'targets' : pageIds[index]
+}, { immediate: true })
 
 watch(pifOpen, open => {
   if (open && !overlayHistory.has('pif-fingerprint')) {
@@ -602,6 +718,9 @@ watch(keyboxOpen, open => {
 </script>
 
 <template>
+  <Teleport to="body">
+    <div class="omk-wallpaper" aria-hidden="true" />
+  </Teleport>
   <div class="omk-app">
     <main v-show="!targetsOpen" class="page-host" :style="{ '--omk-page-direction': pageDirection }">
       <Transition name="page-switch">
@@ -614,18 +733,23 @@ watch(keyboxOpen, open => {
           :keybox-inspector="keyboxInspector"
           :diagnostics="diagnostics"
           :diagnostics-status="diagnosticsStatus"
+          :cloud-status="cloudStatus"
           :tee-status="teeStatus"
           :security-patch="securityPatch"
           :spoofed-device="spoofedDevice"
+          :module-name="moduleName"
           @refresh-diagnostics="refreshDiagnostics"
+          @refresh-cloud="refreshCloud"
         />
       </Transition>
       <Transition name="page-switch">
         <ToolsView
           v-show="pageIndex === 1"
           :security-patch-busy="securityPatchBusy"
+          :keybox-busy="keyboxBusy"
           @open-app-targets="onTool('openAppTargets')"
           @install-keybox="onTool('installKeybox')"
+          @refresh-mirror-keybox="onTool('refreshMirrorKeybox')"
           @sync-security-patch="onTool('syncSecurityPatch')"
           @restore-security-patch="onTool('restoreSecurityPatch')"
           @open-soter-beta="onTool('openSoterBeta')"
@@ -639,6 +763,8 @@ watch(keyboxOpen, open => {
           ref="settingsView"
           @overlay-open="onSettingsOverlayOpen"
           @overlay-close="onSettingsOverlayClose"
+          @choose-wallpaper="chooseWallpaper"
+          @reset-wallpaper="resetWallpaper"
         />
       </Transition>
     </main>
@@ -686,11 +812,11 @@ watch(keyboxOpen, open => {
         <div class="confirm-sheet">
           <p>{{ selectedKeybox ? i18n.t('replace_keybox_selected_file', selectedKeybox.name) : '' }}</p>
           <div class="confirm-actions">
-            <MiuixButton :disabled="keyboxBusy" @click="close">
+            <MiuixButton :disabled="keyboxBusy !== null" @click="close">
               {{ i18n.t('functional_button_cancel') }}
             </MiuixButton>
-            <MiuixButton type="primary" :disabled="keyboxBusy" @click="installKeybox">
-              <MiuixProgressIndicator v-if="keyboxBusy" type="circular" :size="18" />
+            <MiuixButton type="primary" :disabled="keyboxBusy !== null" @click="installKeybox">
+              <MiuixProgressIndicator v-if="keyboxBusy !== null" type="circular" :size="18" />
               {{ i18n.t('functional_button_replace') }}
             </MiuixButton>
           </div>

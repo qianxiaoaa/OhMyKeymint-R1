@@ -13,6 +13,7 @@ import { i18n } from '../i18n'
 export type ToolEvent =
   | 'openAppTargets'
   | 'installKeybox'
+  | 'refreshMirrorKeybox'
   | 'syncSecurityPatch'
   | 'restoreSecurityPatch'
   | 'openSoterBeta'
@@ -20,14 +21,17 @@ export type ToolEvent =
   | 'spoofPif'
 
 type BusyPatch = 'sync' | 'restore' | null
+type BusyKeybox = 'install' | 'mirror' | null
 
 const props = defineProps<{
   securityPatchBusy: BusyPatch
+  keyboxBusy: BusyKeybox
 }>()
 
 const emit = defineEmits<{
   openAppTargets: []
   installKeybox: []
+  refreshMirrorKeybox: []
   syncSecurityPatch: []
   restoreSecurityPatch: []
   openSoterBeta: []
@@ -39,6 +43,7 @@ function runTool(event: ToolEvent): void {
   switch (event) {
     case 'openAppTargets': emit('openAppTargets'); break
     case 'installKeybox': emit('installKeybox'); break
+    case 'refreshMirrorKeybox': emit('refreshMirrorKeybox'); break
     case 'syncSecurityPatch': emit('syncSecurityPatch'); break
     case 'restoreSecurityPatch': emit('restoreSecurityPatch'); break
     case 'openSoterBeta': emit('openSoterBeta'); break
@@ -59,7 +64,7 @@ const groups = [
       event: 'openAppTargets' as const,
       icon: AddCircle,
       title: tr('app_targets_title', 'Add package names'),
-      summary: tr('tools_app_targets_desc', 'Choose which installed apps are routed through Oh My Keymint.'),
+      summary: tr('tools_app_targets_desc', 'Choose which installed apps are routed through Oh My Keymint-R1.'),
     }],
   },
   {
@@ -69,7 +74,13 @@ const groups = [
         event: 'installKeybox' as const,
         icon: Replace,
         title: tr('menu_replace_keybox', 'Change Keybox'),
-        summary: tr('tools_keybox_desc', 'Choose a Keybox.xml file and install it for Oh My Keymint.'),
+        summary: tr('tools_keybox_desc', 'Choose a Keybox.xml file and install it for Oh My Keymint-R1.'),
+      },
+      {
+        event: 'refreshMirrorKeybox' as const,
+        icon: Update,
+        title: tr('tools_mirror_keybox', 'Cloud refresh Keybox'),
+        summary: tr('tools_mirror_keybox_desc', 'Fetch and install the latest valid keybox from the fixed cloud source.'),
       },
       {
         event: 'openSoterBeta' as const,
@@ -116,12 +127,17 @@ const groups = [
 function isBusy(event: ToolEvent): boolean {
   if (event === 'syncSecurityPatch') return props.securityPatchBusy !== null
   if (event === 'restoreSecurityPatch') return props.securityPatchBusy !== null
+  if (event === 'installKeybox') return props.keyboxBusy !== null
+  if (event === 'refreshMirrorKeybox') return props.keyboxBusy !== null
   return false
 }
 
 function isActiveBusy(event: ToolEvent): boolean {
-  return (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync')
-    || (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore')
+  if (event === 'syncSecurityPatch' && props.securityPatchBusy === 'sync') return true
+  if (event === 'restoreSecurityPatch' && props.securityPatchBusy === 'restore') return true
+  if (event === 'installKeybox' && props.keyboxBusy === 'install') return true
+  if (event === 'refreshMirrorKeybox' && props.keyboxBusy === 'mirror') return true
+  return false
 }
 </script>
 

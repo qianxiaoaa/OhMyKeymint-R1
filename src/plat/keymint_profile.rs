@@ -38,6 +38,14 @@ pub(crate) fn resolve_hardware_profile(security_level: SecurityLevel) -> KeyMint
     let version_number = probe_keymint_version_from_vintf(security_level)
         .unwrap_or_else(fallback_keymint_version_from_android);
 
+    if let Some(profile) = crate::pif_spoof::aligned_identity()
+        .ok()
+        .flatten()
+        .and_then(|identity| profile_from_pif_identity(&identity, security_level, version_number))
+    {
+        return profile;
+    }
+
     if let Some(profile) = resolve_property_profile_with(
         security_level,
         version_number,
@@ -55,6 +63,28 @@ pub(crate) fn resolve_hardware_profile(security_level: SecurityLevel) -> KeyMint
             fallback_profile(security_level, version_number)
         }
     }
+}
+
+/// While PIF spoofing is active the reported KeyMint hardware identity follows
+/// the spoofed device instead of the real ro.product.* values, keeping
+/// getHardwareInfo consistent with the aligned attestation IDs.
+fn profile_from_pif_identity(
+    identity: &crate::pif_spoof::PifIdentity,
+    security_level: SecurityLevel,
+    version_number: i32,
+) -> Option<KeyMintHardwareProfile> {
+    let author_name = clean_dynamic_value(identity.manufacturer.clone())?;
+    let identity_name = clean_dynamic_value(identity.device.clone())
+        .or_else(|| clean_dynamic_value(identity.model.clone()))
+        .or_else(|| clean_dynamic_value(identity.brand.clone()));
+    let impl_name = build_impl_name(&author_name, identity_name.as_deref(), security_level);
+    let unique_id = derive_unique_id(&author_name, &impl_name, security_level, version_number)?;
+    Some(KeyMintHardwareProfile {
+        version_number,
+        impl_name,
+        author_name,
+        unique_id,
+    })
 }
 
 fn detect_strongbox_keymint_present() -> bool {
@@ -420,6 +450,76 @@ mod tests {
         assert_eq!(strongbox.impl_name, "Android StrongBox KeyMint 4");
         assert_eq!(strongbox.author_name, AOSP_AUTHOR_NAME);
         assert_eq!(strongbox.unique_id, "android-StrongBox-keymint-4");
+    }
+
+    #[test]
+    fn pif_identity_builds_the_hardware_profile_per_security_level() {
+        let identity = crate::pif_spoof::PifIdentity {
+            brand: "google".to_string(),
+            device: "oriole".to_string(),
+            product: "oriole".to_string(),
+            manufacturer: "Google".to_string(),
+            model: "Pixel 6".to_string(),
+        };
+
+        let tee =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        assert_eq!(tee.author_name, "Google");
+        assert_eq!(tee.impl_name, "Google oriole TEE KeyMint");
+        assert_eq!(tee.version_number, KEYMINT_V4);
+
+        let strongbox =
+            profile_from_pif_identity(&identity, SecurityLevel::STRONGBOX, KEYMINT_V4).unwrap();
+        assert_eq!(strongbox.impl_name, "Google oriole StrongBox KeyMint");
+        assert_ne!(tee.unique_id, strongbox.unique_id);
+        assert!(tee.unique_id.len() <= 32 && tee.unique_id.is_ascii());
+    }
+
+    #[test]
+    fn pif_identity_profile_falls_back_through_device_model_brand() {
+        let mut identity = crate::pif_spoof::PifIdentity {
+            brand: "google".to_string(),
+            device: String::new(),
+            product: "oriole".to_string(),
+            manufacturer: "Google".to_string(),
+            model: "Pixel 6".to_string(),
+        };
+        let by_model =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        assert_eq!(by_model.impl_name, "Google Pixel 6 TEE KeyMint");
+
+        identity.model = String::new();
+        let by_brand =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        // "google" matches the author name case-insensitively, so it is not
+        // repeated inside the implementation name.
+        assert_eq!(by_brand.impl_name, "Google TEE KeyMint");
+
+        identity.brand = String::new();
+        let author_only =
+            profile_from_pif_identity(&identity, SecurityLevel::TRUSTED_ENVIRONMENT, KEYMINT_V4)
+                .unwrap();
+        assert_eq!(author_only.impl_name, "Google TEE KeyMint");
+    }
+
+    #[test]
+    fn pif_identity_profile_rejects_an_empty_author() {
+        let identity = crate::pif_spoof::PifIdentity {
+            brand: "google".to_string(),
+            device: "oriole".to_string(),
+            product: "oriole".to_string(),
+            manufacturer: String::new(),
+            model: "Pixel 6".to_string(),
+        };
+        assert!(profile_from_pif_identity(
+            &identity,
+            SecurityLevel::TRUSTED_ENVIRONMENT,
+            KEYMINT_V4
+        )
+        .is_none());
     }
 
     #[test]

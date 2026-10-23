@@ -941,6 +941,9 @@ fn decode_pem(pem: &str) -> Result<Vec<u8>> {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .filter(|line| !line.starts_with("-----BEGIN ") && !line.starts_with("-----END "))
+        .collect::<String>()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '='))
         .collect::<String>();
 
     if base64_body.is_empty() {
@@ -975,7 +978,7 @@ fn write_keybox_xml(path: &str, xml: &str) -> Result<()> {
     .with_context(|| format!("failed to atomically replace keybox.xml at {path}"))
 }
 
-fn validate_keybox_xml(contents: &[u8]) -> Result<()> {
+pub(crate) fn validate_keybox_xml(contents: &[u8]) -> Result<()> {
     if contents.len() > MAX_KEYBOX_XML_BYTES {
         bail!("keybox.xml exceeds the {} byte limit", MAX_KEYBOX_XML_BYTES);
     }
@@ -1442,6 +1445,13 @@ fn install_keybox(
 
     if retire_db_entries {
         retire_stale_keybox_bound_entries(new_identity);
+        if changed {
+            // R1: a keybox swap is an intentional identity change, so the effective
+            // vbmeta values are re-pinned here instead of being left for the user.
+            if let Err(error) = crate::trust_pin::on_keybox_identity_change() {
+                error!("failed to re-pin the root of trust after a keybox change: {error:#}");
+            }
+        }
     }
 
     changed
@@ -1634,6 +1644,67 @@ mod tests {
         let oversized = vec![b' '; MAX_KEYBOX_XML_BYTES + 1];
         let error = validate_keybox_xml(&oversized).unwrap_err();
         assert!(error.to_string().contains("exceeds"));
+    }
+
+    fn inject_pem_body_noise(xml: &str) -> String {
+        let mut inside_pem = false;
+        let mut out = String::new();
+        for line in xml.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("-----BEGIN ") {
+                inside_pem = true;
+            } else if trimmed.starts_with("-----END ") {
+                inside_pem = false;
+            } else if inside_pem {
+                let mut noised = String::new();
+                for (index, ch) in line.chars().enumerate() {
+                    if matches!(index, 3 | 11) {
+                        noised.push('\u{0006}');
+                        noised.push('\t');
+                    }
+                    noised.push(ch);
+                }
+                out.push_str(&noised);
+                out.push('\n');
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        while out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    }
+
+    #[test]
+    fn webui_import_tolerates_stray_bytes_in_pem_bodies() {
+        let noisy = inject_pem_body_noise(BUNDLED_KEYBOX_XML);
+        assert!(noisy.contains('\u{0006}'));
+        validate_keybox_xml(noisy.as_bytes()).unwrap();
+        let original = KeyBox::from_xml_str(BUNDLED_KEYBOX_XML).unwrap();
+        let parsed = KeyBox::from_xml_str(&noisy).unwrap();
+        assert_eq!(parsed.identity_digest(), original.identity_digest());
+        assert_eq!(parsed.to_xml_string(), original.to_xml_string());
+    }
+
+    #[test]
+    fn webui_import_still_rejects_corrupted_ec_private_key() {
+        let noisy = inject_pem_body_noise(BUNDLED_KEYBOX_XML);
+        let begin = "-----BEGIN EC PRIVATE KEY-----";
+        let start = noisy.find(begin).expect("EC key present");
+        let body_start = noisy[start..].find('\n').map(|i| start + i + 1).unwrap();
+        let body_end = noisy[body_start..]
+            .find('\n')
+            .map(|i| body_start + i)
+            .unwrap();
+        let body_line = &noisy[body_start..body_end];
+        let mut chars: Vec<char> = body_line.chars().collect();
+        chars[8] = if chars[8] == 'A' { 'B' } else { 'A' };
+        let corrupted_line: String = chars.into_iter().collect();
+        let corrupted = noisy.replacen(body_line, &corrupted_line, 1);
+        assert_ne!(corrupted, noisy);
+        assert!(validate_keybox_xml(corrupted.as_bytes()).is_err());
     }
 
     #[test]

@@ -30,6 +30,7 @@ chown 1017:1017 "$SOTER_DIR"
 mkdir -p "$STATE_DIR"
 rm -f "$STATE_DIR/keymint-daemon.pid" "$STATE_DIR/injector-daemon.pid"
 rm -f "$STATE_DIR/restart.keymint" "$STATE_DIR/restart.injector" "$STATE_DIR/restart.all"
+rm -f "$TARGET_DIR/data/restart.keymint" "$TARGET_DIR/data/restart.injector"
 
 if [ ! -f "$TARGET_KEYBOX" ] && [ -f "$MODDIR/keybox.xml" ]; then
   cp "$MODDIR/keybox.xml" "$TARGET_KEYBOX"

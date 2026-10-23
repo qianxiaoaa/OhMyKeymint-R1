@@ -33,6 +33,14 @@ ABI_TO_TARGET = {
     "x86_64": "x86_64-linux-android",
 }
 
+# Per-target BoringSSL build directories. Keep this in sync with the same map
+# in build.py; both tools must resolve the same wrapper files, otherwise the
+# bssl-sys build.rs panics while copying per-target bindings.
+BORINGSSL_BUILD_DIRS = {
+    "aarch64-linux-android": Path.home() / ".cargo" / "boringssl" / "build",
+    "x86_64-linux-android": Path.home() / ".cargo" / "boringssl" / "build-x86_64",
+}
+
 RESTART_TARGETS = {
     "all": "restart.all",
     "keymint": "restart.keymint",
@@ -55,6 +63,7 @@ def run(
     check: bool = True,
     capture_output: bool = False,
     quiet: bool = False,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if not quiet:
         print_status(f"+ {' '.join(cmd)}")
@@ -64,6 +73,7 @@ def run(
         check=check,
         text=True,
         capture_output=capture_output,
+        env=env,
     )
 
 
@@ -121,9 +131,30 @@ def default_injector_path(abi: str, release: bool) -> Path:
     return target_dir_for(abi, release) / "inject"
 
 
+def cargo_env_for_target(target: str) -> dict[str, str]:
+    """Return an environment that points bssl-sys at the per-target BoringSSL
+    build directory, mirroring build.py. A bare `cargo` invocation otherwise
+    defaults to `~/.cargo/boringssl/build` for every target, which breaks
+    x86_64 builds (no wrapper_x86_64-linux-android.rs there)."""
+    env = os.environ.copy()
+    build_dir = Path(env.get("BORINGSSL_BUILD_DIR") or BORINGSSL_BUILD_DIRS[target])
+    if not build_dir.is_absolute():
+        build_dir = (REPO_ROOT / build_dir).resolve()
+    build_dir = build_dir.resolve()
+    expected = build_dir / "rust" / "bssl-sys" / f"wrapper_{target}.rs"
+    if not expected.is_file():
+        raise FileNotFoundError(
+            f"BoringSSL is not built for {target}; missing: {expected}. "
+            "Build it with -DRUST_BINDINGS=<target> or set BORINGSSL_BUILD_DIR."
+        )
+    env["BORINGSSL_BUILD_DIR"] = os.fspath(build_dir)
+    return env
+
+
 def build_binaries(abi: str, platform: int, release: bool) -> None:
     _ = platform
     target = ABI_TO_TARGET[abi]
+    env = cargo_env_for_target(target)
     keymint_cmd = [
         "cargo",
         "build",
@@ -145,8 +176,8 @@ def build_binaries(abi: str, platform: int, release: bool) -> None:
     if release:
         keymint_cmd.append("--release")
         injector_cmd.append("--release")
-    run(keymint_cmd)
-    run(injector_cmd)
+    run(keymint_cmd, env=env)
+    run(injector_cmd, env=env)
 
 
 def latest_full_package(abi: str, release: bool) -> Path:

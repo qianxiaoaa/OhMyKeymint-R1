@@ -18,9 +18,6 @@ const emit = defineEmits<{
 }>()
 
 const preview = isDev()
-const DEFAULT_RELAY_URL = 'http://110.40.170.96:10886'
-const DEFAULT_RELAY_DEVICE_ID = 'device-b-c3f204aa'
-const DEFAULT_RELAY_TOKEN = 'aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd'
 const enabled = ref(false)
 const remoteEnabled = ref(false)
 const url = ref('')
@@ -81,9 +78,9 @@ async function load(): Promise<void> {
       ? [{
           enabled: false,
           remote_enabled: false,
-          url: DEFAULT_RELAY_URL,
-          token: DEFAULT_RELAY_TOKEN,
-          device_id: DEFAULT_RELAY_DEVICE_ID,
+          url: '',
+          token: '',
+          device_id: '',
           tls_insecure: false,
           uid_map: '',
         }, { enabled: false }]

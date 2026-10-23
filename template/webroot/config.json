@@ -1,5 +1,5 @@
 {
-    "title": "Oh My Keymint",
+    "title": "Oh My Keymint-R1",
     "windowResize": false,
     "exitConfirm": false,
     "contentSecurityPolicy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: ksu:; font-src 'self'; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",

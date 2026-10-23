@@ -12,16 +12,21 @@ const SUPPORTED_ABIS = ['arm64-v8a', 'x86_64'] as const
 type SupportedAbi = typeof SUPPORTED_ABIS[number]
 type HelperPaths = { abi: SupportedAbi, inject: string, keymint: string }
 const KEYBOX_BASE64_CHUNK_BYTES = 48 * 1024
+const MAX_SCOOP_JSON_BYTES = 64 * 1024
 const MAX_BULLETIN_BYTES = 2 * 1024 * 1024
 const MAX_PIF_CATALOG_BYTES = 64 * 1024
 const MAX_PIF_STATE_BYTES = 2 * 1024
 const MAX_SOTER_HAL_JSON_BYTES = 16 * 1024
 const MAX_DIAGNOSTICS_JSON_BYTES = 8 * 1024
+const MAX_CLOUD_JSON_BYTES = 8 * 1024
 const MAX_KEYBOX_INSPECTOR_JSON_BYTES = 32 * 1024
 const MAX_APP_PATCH_LEVELS_JSON_BYTES = 64 * 1024
-const DEFAULT_SOTER_RELAY_URL = 'http://110.40.170.96:10886'
-const DEFAULT_SOTER_RELAY_DEVICE_ID = 'device-b-c3f204aa'
-const DEFAULT_SOTER_RELAY_TOKEN = 'aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd'
+const MAX_ROOT_OF_TRUST_JSON_BYTES = 4 * 1024
+const MAX_WALLPAPER_JSON_BYTES = 4 * 1024
+const WALLPAPER_CHUNK_BYTES = 48 * 1024
+const WALLPAPER_TOKEN_RE = /^[0-9a-f]{32}$/
+const WALLPAPER_URL_RE = /^assets\/wallpaper\/(default\.jpg|custom\.(jpg|png|webp))$/
+const WALLPAPER_STORAGE_ROOT = '/storage/emulated/0/'
 const MAX_PIF_DEVICES = 64
 const MAX_PIF_MODEL_LENGTH = 128
 const MAX_PIF_PRODUCT_LENGTH = 128
@@ -29,6 +34,49 @@ const MAX_PIF_FINGERPRINT_LENGTH = 1024
 const PIF_PRODUCT_RE = /^[a-z0-9][a-z0-9_]*$/
 
 export const MAX_KEYBOX_XML_BYTES = 64 * 1024
+export const MAX_WALLPAPER_BYTES = 10 * 1024 * 1024
+export const WALLPAPER_EXTENSIONS = ['jpg', 'jpeg', 'png', 'webp'] as const
+
+export interface WallpaperState {
+  custom: boolean
+  url: string
+  bytes: number
+  updated_at: number
+  max_bytes: number
+}
+
+/** Cloud connection state: the mirror keybox feed and the online heartbeat. */
+export interface MirrorStatus {
+  installed_sha256: string
+  installed_source: string
+  last_fetch_unix: number
+  last_sha256: string
+  last_source: string
+  last_status: string
+  last_error: string
+}
+
+export interface OnlineReportStatus {
+  module_id: string
+  last_report_unix: number
+  last_status: string
+  last_error: string
+  interval_seconds: number
+}
+
+export interface CloudStatus {
+  mirror: MirrorStatus
+  online: OnlineReportStatus
+}
+
+export interface MirrorRefreshReport {
+  ok: boolean
+  applied: boolean
+  source: string
+  sha256: string
+  size: number
+  note: string
+}
 
 export interface PifDevice {
   model: string
@@ -168,12 +216,35 @@ export interface DiagnosticsState {
   rkp_tee: ServiceDiagnostic
   rkp_strongbox: ServiceDiagnostic
   selinux: 'enforcing' | 'permissive' | 'unknown'
+  rot: RotDiagnostic
 }
 
 export interface HardwareDiagnostic {
   status: 'available' | 'unavailable' | 'error'
   version: number | null
   name: string | null
+}
+
+export interface RotDiagnostic {
+  status: 'ok' | 'drift' | 'unknown'
+  mode: string
+  pinned: boolean
+  drift: boolean
+}
+
+// Field order mirrors the Rust serializer so the strict key check stays valid.
+export interface RootOfTrustStatus {
+  mode: 'pinned' | 'auto'
+  vb_key: string
+  vb_hash: string
+  vb_key_source: string
+  vb_hash_source: string
+  pinned_in_config: boolean
+  drift: boolean
+  stamp_present: boolean
+  purged_keys: number | null
+  restart_required: boolean
+  note: string
 }
 
 function parseCanonicalJson(output: string, description: string): unknown {
@@ -396,7 +467,7 @@ function parseHardwareDiagnostic(value: unknown): HardwareDiagnostic {
 function parseDiagnostics(output: string): DiagnosticsState {
   const parsed = parseCanonicalJson(output, 'service diagnostics')
   if (!isRecord(parsed)
-      || !hasOnlyKeys(parsed, ['keymint', 'keystore2', 'injector', 'soter', 'tee', 'strongbox', 'rkp_tee', 'rkp_strongbox', 'selinux'])
+      || !hasOnlyKeys(parsed, ['keymint', 'keystore2', 'injector', 'soter', 'tee', 'strongbox', 'rkp_tee', 'rkp_strongbox', 'selinux', 'rot'])
       || (parsed.selinux !== 'enforcing' && parsed.selinux !== 'permissive' && parsed.selinux !== 'unknown')) {
     throw new Error('OMK returned invalid service diagnostics')
   }
@@ -410,7 +481,190 @@ function parseDiagnostics(output: string): DiagnosticsState {
     rkp_tee: parseServiceDiagnostic(parsed.rkp_tee),
     rkp_strongbox: parseServiceDiagnostic(parsed.rkp_strongbox),
     selinux: parsed.selinux,
+    rot: parseRotDiagnostic(parsed.rot),
   }
+}
+
+function parseRotDiagnostic(value: unknown): RotDiagnostic {
+  if (!isRecord(value)
+      || !hasOnlyKeys(value, ['status', 'mode', 'pinned', 'drift'])
+      || (value.status !== 'ok' && value.status !== 'drift' && value.status !== 'unknown')
+      || !isSafeTextOrEmpty(value.mode, 32)
+      || typeof value.pinned !== 'boolean'
+      || typeof value.drift !== 'boolean') {
+    throw new Error('OMK returned an invalid root of trust diagnostic')
+  }
+  return { status: value.status, mode: value.mode, pinned: value.pinned, drift: value.drift }
+}
+
+function parseCloudStatus(output: string): CloudStatus {
+  const parsed = parseCanonicalJson(output, 'cloud status')
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, ['mirror', 'online'])
+      || !isRecord(parsed.mirror)
+      || !hasOnlyKeys(parsed.mirror, [
+        'installed_sha256', 'installed_source', 'last_fetch_unix', 'last_sha256',
+        'last_source', 'last_status', 'last_error',
+      ])
+      || !isHexDigestOrEmpty(parsed.mirror.installed_sha256)
+      || !isSafeTextOrEmpty(parsed.mirror.installed_source, 32)
+      || typeof parsed.mirror.last_fetch_unix !== 'number'
+      || !Number.isSafeInteger(parsed.mirror.last_fetch_unix)
+      || parsed.mirror.last_fetch_unix < 0
+      || !isHexDigestOrEmpty(parsed.mirror.last_sha256)
+      || !isSafeTextOrEmpty(parsed.mirror.last_source, 32)
+      || !isSafeTextOrEmpty(parsed.mirror.last_status, 32)
+      || !isSafeTextOrEmpty(parsed.mirror.last_error, 512)
+      || !isRecord(parsed.online)
+      || !hasOnlyKeys(parsed.online, [
+        'module_id', 'last_report_unix', 'last_status', 'last_error', 'interval_seconds',
+      ])
+      || !isSafeTextOrEmpty(parsed.online.module_id, 64)
+      || typeof parsed.online.last_report_unix !== 'number'
+      || !Number.isSafeInteger(parsed.online.last_report_unix)
+      || parsed.online.last_report_unix < 0
+      || !isSafeTextOrEmpty(parsed.online.last_status, 32)
+      || !isSafeTextOrEmpty(parsed.online.last_error, 512)
+      || typeof parsed.online.interval_seconds !== 'number'
+      || !Number.isSafeInteger(parsed.online.interval_seconds)
+      || parsed.online.interval_seconds < 0) {
+    throw new Error('OMK returned an invalid cloud status')
+  }
+  return {
+    mirror: {
+      installed_sha256: parsed.mirror.installed_sha256 as string,
+      installed_source: parsed.mirror.installed_source as string,
+      last_fetch_unix: parsed.mirror.last_fetch_unix as number,
+      last_sha256: parsed.mirror.last_sha256 as string,
+      last_source: parsed.mirror.last_source as string,
+      last_status: parsed.mirror.last_status as string,
+      last_error: parsed.mirror.last_error as string,
+    },
+    online: {
+      module_id: parsed.online.module_id as string,
+      last_report_unix: parsed.online.last_report_unix as number,
+      last_status: parsed.online.last_status as string,
+      last_error: parsed.online.last_error as string,
+      interval_seconds: parsed.online.interval_seconds as number,
+    },
+  }
+}
+
+function parseMirrorRefreshReport(output: string): MirrorRefreshReport {
+  const parsed = parseCanonicalJson(output, 'mirror refresh report')
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, ['ok', 'applied', 'source', 'sha256', 'size', 'note'])
+      || typeof parsed.ok !== 'boolean'
+      || typeof parsed.applied !== 'boolean'
+      || !isSafeTextOrEmpty(parsed.source, 32)
+      || !isHexDigestOrEmpty(parsed.sha256)
+      || typeof parsed.size !== 'number'
+      || !Number.isSafeInteger(parsed.size)
+      || parsed.size < 0
+      || !isSafeTextOrEmpty(parsed.note, 512)) {
+    throw new Error('OMK returned an invalid mirror refresh report')
+  }
+  return {
+    ok: parsed.ok,
+    applied: parsed.applied,
+    source: parsed.source as string,
+    sha256: parsed.sha256 as string,
+    size: parsed.size as number,
+    note: parsed.note as string,
+  }
+}
+
+function isHexDigestOrEmpty(value: unknown): boolean {
+  return value === '' || isHexDigest(value, 64)
+}
+
+function isHexDigest(value: unknown, length: number): value is string {
+  return typeof value === 'string'
+    && value.length === length
+    && /^[0-9a-f]+$/.test(value)
+}
+
+function parseRootOfTrust(output: string, description: string): RootOfTrustStatus {
+  const parsed = parseCanonicalJson(output, description)
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, [
+        'mode', 'vb_key', 'vb_hash', 'vb_key_source', 'vb_hash_source',
+        'pinned_in_config', 'drift', 'stamp_present', 'purged_keys', 'restart_required', 'note',
+      ])
+      || (parsed.mode !== 'pinned' && parsed.mode !== 'auto')
+      || !isHexDigest(parsed.vb_key, 64)
+      || !isHexDigest(parsed.vb_hash, 64)
+      || !isSafeTextOrEmpty(parsed.vb_key_source, 64)
+      || !isSafeTextOrEmpty(parsed.vb_hash_source, 64)
+      || typeof parsed.pinned_in_config !== 'boolean'
+      || typeof parsed.drift !== 'boolean'
+      || typeof parsed.stamp_present !== 'boolean'
+      || (parsed.purged_keys !== null
+        && (typeof parsed.purged_keys !== 'number' || !Number.isSafeInteger(parsed.purged_keys) || parsed.purged_keys < 0))
+      || typeof parsed.restart_required !== 'boolean'
+      || typeof parsed.note !== 'string'
+      || parsed.note.length > 512
+      || /[\u0000-\u001f\u007f]/.test(parsed.note)) {
+    throw new Error(`OMK returned an invalid ${description}`)
+  }
+  return {
+    mode: parsed.mode,
+    vb_key: parsed.vb_key,
+    vb_hash: parsed.vb_hash,
+    vb_key_source: parsed.vb_key_source,
+    vb_hash_source: parsed.vb_hash_source,
+    pinned_in_config: parsed.pinned_in_config,
+    drift: parsed.drift,
+    stamp_present: parsed.stamp_present,
+    purged_keys: parsed.purged_keys,
+    restart_required: parsed.restart_required,
+    note: parsed.note,
+  }
+}
+
+function parseWallpaperState(output: string, description: string): WallpaperState {
+  const parsed = parseCanonicalJson(output, description)
+  if (!isRecord(parsed)
+      || !hasOnlyKeys(parsed, ['custom', 'url', 'bytes', 'updated_at', 'max_bytes'])
+      || typeof parsed.custom !== 'boolean'
+      || typeof parsed.url !== 'string'
+      || !WALLPAPER_URL_RE.test(parsed.url)
+      || typeof parsed.bytes !== 'number'
+      || !Number.isSafeInteger(parsed.bytes)
+      || parsed.bytes < 0
+      || parsed.bytes > MAX_WALLPAPER_BYTES
+      || typeof parsed.updated_at !== 'number'
+      || !Number.isSafeInteger(parsed.updated_at)
+      || parsed.updated_at < 0
+      || parsed.max_bytes !== MAX_WALLPAPER_BYTES) {
+    throw new Error(`OMK returned invalid ${description}`)
+  }
+  if (parsed.custom !== (parsed.url !== 'assets/wallpaper/default.jpg')) {
+    throw new Error(`OMK returned inconsistent ${description}`)
+  }
+  return parsed as unknown as WallpaperState
+}
+
+function validateWallpaperStoragePath(path: string): string {
+  if (!path.startsWith(WALLPAPER_STORAGE_ROOT)
+      || path.length > 4096
+      || /[\u0000-\u001f\u007f]/.test(path)
+      || path.includes('//')
+      || path.split('/').some(part => part === '.' || part === '..')) {
+    throw new Error('The wallpaper must be chosen from shared storage')
+  }
+  const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
+  if (!(WALLPAPER_EXTENSIONS as readonly string[]).includes(extension)) {
+    throw new Error('The wallpaper must be a JPG, PNG or WebP image')
+  }
+  return path
+}
+
+function isSafeTextOrEmpty(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string'
+    && value.length <= maxLength
+    && value.trim() === value
+    && !/[\u0000-\u001f\u007f]/.test(value)
 }
 
 function encodeBase64Bytes(bytes: Uint8Array): string {
@@ -537,6 +791,22 @@ export class Cli {
     return parseDiagnostics(output)
   }
 
+  async getCloudStatus(): Promise<CloudStatus> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-get-cloud-status'], MAX_CLOUD_JSON_BYTES)
+    return parseCloudStatus(output)
+  }
+
+  async refreshMirrorKeybox(): Promise<MirrorRefreshReport> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-refresh-mirror-keybox'],
+      MAX_CLOUD_JSON_BYTES,
+    )
+    return parseMirrorRefreshReport(output)
+  }
+
   async checkKeyboxRevocation(): Promise<KeyboxRevocationStatus> {
     const { keymint } = await this.#getHelperPaths()
     const output = await this.#run(keymint, ['--webui-check-keybox-revocation'], 256)
@@ -586,16 +856,10 @@ export class Cli {
 
   async setSoterHal(state: SoterHalState): Promise<void> {
     const { keymint } = await this.#getHelperPaths()
-    // Native save resolves empty relay identity fields to the module defaults,
-    // including when the relay is currently disabled. Normalize before the
-    // write so the mandatory read-back check compares effective values.
-    const effectiveState: SoterHalState = {
-      ...state,
-      url: state.url || DEFAULT_SOTER_RELAY_URL,
-      token: state.token || DEFAULT_SOTER_RELAY_TOKEN,
-      device_id: state.device_id || DEFAULT_SOTER_RELAY_DEVICE_ID,
-    }
-    const json = JSON.stringify(effectiveState)
+    // Relay identity is only what the user configured; the native save
+    // validates and stores it verbatim, so the mandatory read-back check
+    // compares the saved values directly.
+    const json = JSON.stringify(state)
     if (new TextEncoder().encode(json).byteLength > MAX_SOTER_HAL_JSON_BYTES) {
       throw new Error('Soter HAL configuration exceeds the byte limit')
     }
@@ -610,6 +874,62 @@ export class Cli {
     if (JSON.stringify(persisted) !== json) {
       throw new Error('Soter HAL configuration read-back did not match the saved values')
     }
+  }
+
+  async getWallpaper(): Promise<WallpaperState> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-get-wallpaper'], MAX_WALLPAPER_JSON_BYTES)
+    return parseWallpaperState(output, 'wallpaper state')
+  }
+
+  async resetWallpaper(): Promise<WallpaperState> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-reset-wallpaper'], MAX_WALLPAPER_JSON_BYTES)
+    return parseWallpaperState(output, 'wallpaper reset result')
+  }
+
+  async installWallpaperFromStorage(path: string): Promise<WallpaperState> {
+    const source = validateWallpaperStoragePath(path)
+    const { keymint } = await this.#getHelperPaths()
+    // KernelSU runs spawn arguments through a shell, so the storage path
+    // travels as one base64 argument instead of a raw pathname.
+    const output = await this.#run(
+      keymint,
+      ['--webui-install-wallpaper-base64', encodeBase64Utf8(source)],
+      MAX_WALLPAPER_JSON_BYTES,
+    )
+    return parseWallpaperState(output, 'wallpaper install result')
+  }
+
+  async installWallpaper(contents: Uint8Array): Promise<WallpaperState> {
+    if (contents.byteLength < 1 || contents.byteLength > MAX_WALLPAPER_BYTES) {
+      throw new Error(`The wallpaper must be between 1 byte and ${MAX_WALLPAPER_BYTES} bytes`)
+    }
+    const { keymint } = await this.#getHelperPaths()
+    const token = await this.#run(keymint, ['--webui-stage-wallpaper'], 64)
+    if (!WALLPAPER_TOKEN_RE.test(token)) {
+      throw new Error('OMK returned an invalid wallpaper upload token')
+    }
+    // One command argument cannot carry a picture, so the base64 stream travels as
+    // sequential chunks bound to the single-use token.
+    const payload = encodeBase64Bytes(contents)
+    for (let offset = 0; offset < payload.length; offset += WALLPAPER_CHUNK_BYTES) {
+      const chunk = payload.slice(offset, offset + WALLPAPER_CHUNK_BYTES)
+      const accepted = await this.#run(
+        keymint,
+        ['--webui-stage-wallpaper-append', token, chunk],
+        64,
+      )
+      if (accepted !== 'wallpaper_chunk_accepted') {
+        throw new Error('OMK did not accept the wallpaper upload chunk')
+      }
+    }
+    const output = await this.#run(
+      keymint,
+      ['--webui-install-staged-wallpaper', token],
+      MAX_WALLPAPER_JSON_BYTES,
+    )
+    return parseWallpaperState(output, 'wallpaper install result')
   }
 
   async syncSecurityPatch(date: string): Promise<string> {
@@ -654,6 +974,32 @@ export class Cli {
       throw new Error('Android returned an invalid system security-patch date')
     }
     return patch
+  }
+
+  async getModuleName(): Promise<string> {
+    let probe: Awaited<ReturnType<typeof exec>>
+    try {
+      probe = await exec(
+        `/system/bin/sh -c ${shellQuote(`/system/bin/cat ${shellQuote(`${MODULE_ROOT}/module.prop`)}`)}`,
+      )
+    } catch (error) {
+      throw new Error(`Unable to read module.prop: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    if (probe.errno !== 0) {
+      throw new Error(
+        `Unable to read module.prop: ${probe.stderr.trim() || `shell exited with code ${probe.errno}`}`,
+      )
+    }
+
+    const name = probe.stdout
+      .split('\n')
+      .find((line) => line.startsWith('name='))
+      ?.slice('name='.length)
+      .trim()
+    if (!name) {
+      throw new Error('module.prop has no module name')
+    }
+    return name
   }
 
   async getTeeStatus(): Promise<void> {
@@ -750,9 +1096,28 @@ export class Cli {
     return state
   }
 
+  async getRootOfTrust(): Promise<RootOfTrustStatus> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(keymint, ['--webui-get-rot-status'], MAX_ROOT_OF_TRUST_JSON_BYTES)
+    return parseRootOfTrust(output, 'root of trust status')
+  }
+
+  async repinRootOfTrust(purge: boolean): Promise<RootOfTrustStatus> {
+    const { keymint } = await this.#getHelperPaths()
+    const output = await this.#run(
+      keymint,
+      ['--webui-repin-rot', purge ? '1' : '0'],
+      MAX_ROOT_OF_TRUST_JSON_BYTES,
+    )
+    return parseRootOfTrust(output, 'root of trust result')
+  }
+
   async #runInject(args: string[]): Promise<string> {
     const { inject } = await this.#getHelperPaths()
-    return this.#run(inject, args)
+    // getScoop returns a short package list, setScoop echoes nothing and
+    // getTeeStatus emits a single token; a 64 KiB cap matches the other OMK
+    // helpers and keeps an unexpectedly chatty inject from exhausting memory.
+    return this.#run(inject, args, MAX_SCOOP_JSON_BYTES)
   }
 
   async #getHelperPaths(): Promise<HelperPaths> {
@@ -786,7 +1151,7 @@ export class Cli {
       throw new Error('Unsupported Android ABI: OMK provides arm64-v8a and x86_64 binaries')
     }
 
-    const roots = [HOT_UPDATE_ROOT, `${MODULE_ROOT}/libs/${abi}`]
+    const roots = [`${MODULE_ROOT}/libs/${abi}`, HOT_UPDATE_ROOT]
     for (const root of roots) {
       const inject = `${root}/inject`
       const keymint = `${root}/keymint`

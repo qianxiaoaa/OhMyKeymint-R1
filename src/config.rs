@@ -23,8 +23,12 @@ static CONFIG_WATCHER_STARTED: OnceLock<()> = OnceLock::new();
 static CONFIG_FILE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const CONFIG_PATH: &str = "/data/misc/keystore/omk/config.toml";
-const CONFIG_VERSION_V1: u32 = 1;
-const CURRENT_CONFIG_VERSION: u32 = 2;
+/// Legacy format: identical to the current v1 except an optional `[server]` table
+/// that was removed when the client stopped configuring cloud keybox services.
+const CONFIG_VERSION_V2: u32 = 2;
+/// Current on-disk format. v0 (prerelease) configs upgrade to this in place and
+/// v2 configs are downgraded to it, so a single constant is the source of truth.
+const CURRENT_CONFIG_VERSION: u32 = 1;
 
 const REPLACE_SAVE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const REPLACE_SAVE_RETRY_LIMIT: usize = 10;
@@ -144,6 +148,56 @@ fn sync_security_patch_to_path(path: &Path, value: &str) -> Result<()> {
         return Ok(());
     }
     persist_config_contents_unlocked(path, &serialized)
+}
+
+/// Replaces only `trust.vb_key` and `trust.vb_hash` with the values the device
+/// reports, so a later vbmeta change cannot silently re-derive the KeyBlob KEK and
+/// make stored blobs undecryptable. Unknown and unrelated config data is preserved.
+pub fn sync_vbmeta_pin(vb_key_hex: &str, vb_hash_hex: &str) -> Result<bool> {
+    sync_vbmeta_pin_to_path(Path::new(CONFIG_PATH), vb_key_hex, vb_hash_hex)
+}
+
+fn sync_vbmeta_pin_to_path(path: &Path, vb_key_hex: &str, vb_hash_hex: &str) -> Result<bool> {
+    for (field, value) in [("trust.vb_key", vb_key_hex), ("trust.vb_hash", vb_hash_hex)] {
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("{field} must be exactly 64 hexadecimal characters");
+        }
+        if value != value.to_ascii_lowercase() {
+            bail!("{field} must use lowercase hexadecimal characters");
+        }
+    }
+
+    let _write_guard = CONFIG_FILE_WRITE_LOCK
+        .lock()
+        .map_err(|_| anyhow!("config file write lock poisoned"))?;
+    let existing = fs::read_to_string(path)
+        .with_context(|| format!("failed to read config file {}", path.display()))?;
+    parse_config_file(&existing, false)
+        .context("refusing to overwrite config.toml that is not a current valid config")?;
+    let mut table: toml::Table =
+        toml::from_str(&existing).context("refusing to overwrite invalid existing config.toml")?;
+
+    let trust = table
+        .get_mut("trust")
+        .and_then(toml::Value::as_table_mut)
+        .ok_or_else(|| anyhow!("config is missing a valid [trust] table"))?;
+    trust.insert(
+        "vb_key".to_string(),
+        toml::Value::String(vb_key_hex.to_string()),
+    );
+    trust.insert(
+        "vb_hash".to_string(),
+        toml::Value::String(vb_hash_hex.to_string()),
+    );
+
+    let serialized = toml::to_string_pretty(&table).context("failed to serialize config.toml")?;
+    parse_config_file(&serialized, false)
+        .context("refusing to write an invalid pinned config.toml")?;
+    if existing == serialized {
+        return Ok(false);
+    }
+    persist_config_contents_unlocked(path, &serialized)?;
+    Ok(true)
 }
 
 pub(crate) fn validate_security_patch_sync_value(value: &str) -> Result<()> {
@@ -403,14 +457,13 @@ fn parse_config_file(contents: &str, allow_migration: bool) -> Result<ParsedConf
     let migrated = match version {
         0 if allow_migration => {
             upgrade_v0_to_v1(&mut table)?;
-            upgrade_v1_to_v2(&mut table)?;
             true
         }
-        CONFIG_VERSION_V1 if allow_migration => {
-            upgrade_v1_to_v2(&mut table)?;
+        CONFIG_VERSION_V2 if allow_migration => {
+            downgrade_v2_to_v1(&mut table)?;
             true
         }
-        0 | CONFIG_VERSION_V1 => {
+        0 | CONFIG_VERSION_V2 => {
             return Err(anyhow!(
                 "config version {version} requires a keymint restart to migrate"
             ))
@@ -429,6 +482,7 @@ fn parse_config_file(contents: &str, allow_migration: bool) -> Result<ParsedConf
     validate_main_config(&config_file.main)?;
     validate_trust_config(&config_file.trust)?;
     validate_app_patch_levels(&config_file.app_patch_levels)?;
+    validate_r1_config(&config_file.r1)?;
     Ok(ParsedConfigFile {
         config_file,
         table,
@@ -452,7 +506,7 @@ fn upgrade_v0_to_v1(table: &mut toml::Table) -> Result<()> {
     table.remove("trust_record");
     table.insert(
         "version".to_string(),
-        toml::Value::Integer(i64::from(CONFIG_VERSION_V1)),
+        toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
     );
     let trust = table
         .get_mut("trust")
@@ -470,15 +524,11 @@ fn upgrade_v0_to_v1(table: &mut toml::Table) -> Result<()> {
     Ok(())
 }
 
-fn upgrade_v1_to_v2(table: &mut toml::Table) -> Result<()> {
-    let trust = table
-        .get_mut("trust")
-        .and_then(toml::Value::as_table_mut)
-        .ok_or_else(|| anyhow!("config is missing a valid [trust] table"))?;
-    trust.insert(
-        "os_version".to_string(),
-        toml::Value::String("auto".to_string()),
-    );
+fn downgrade_v2_to_v1(table: &mut toml::Table) -> Result<()> {
+    // The v2 format carried an optional `[server]` table for the cloud keybox
+    // settings. Those settings are gone: the client fetches keyboxes from fixed
+    // GitHub mirrors and no longer configures a cloud service.
+    table.remove("server");
     table.insert(
         "version".to_string(),
         toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
@@ -695,6 +745,7 @@ pub struct Config {
     pub trust: ResolvedTrust,
     pub device: DeviceProperty,
     pub app_patch_levels: BTreeMap<String, AppPatchLevels>,
+    pub r1: R1Config,
     trust_intent: RawTrustConfig,
 }
 
@@ -706,6 +757,7 @@ impl Config {
             trust: resolved_trust,
             device: config_file.device.clone(),
             app_patch_levels: config_file.app_patch_levels.clone(),
+            r1: config_file.r1.clone(),
             trust_intent: config_file.trust.clone(),
         }
     }
@@ -720,6 +772,8 @@ pub struct ConfigFile {
     pub device: DeviceProperty,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub app_patch_levels: BTreeMap<String, AppPatchLevels>,
+    #[serde(default)]
+    pub r1: R1Config,
 }
 
 impl Default for ConfigFile {
@@ -731,6 +785,7 @@ impl Default for ConfigFile {
             trust: RawTrustConfig::default(),
             device: DeviceProperty::default(),
             app_patch_levels: BTreeMap::new(),
+            r1: R1Config::default(),
         }
     }
 }
@@ -1115,6 +1170,8 @@ pub struct ResolvedTrust {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RawTrustConfig {
+    /// Added in the v2 format. Old v1 files predate it, so it defaults to `auto`.
+    #[serde(default)]
     pub os_version: OsVersionSpec,
     pub security_patch: String,
     #[serde(default = "default_patchlevel_mode")]
@@ -1145,6 +1202,52 @@ impl Default for RawTrustConfig {
             device_locked: true,
         }
     }
+}
+
+/// R1 root of trust policy.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RotPinMode {
+    /// Write the effective vbmeta values into `config.toml` as explicit hex.
+    #[default]
+    Pinned,
+    /// Keep the upstream `auto` behaviour and never rewrite the trust values.
+    Auto,
+}
+
+impl RotPinMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RotPinMode::Pinned => "pinned",
+            RotPinMode::Auto => "auto",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct R1Config {
+    /// Root of trust pinning mode.
+    pub rot_pin: RotPinMode,
+    /// Clears key blobs that were created with a previous root of trust instead of
+    /// letting them report `InvalidKeyBlob` forever.
+    pub rot_auto_heal: bool,
+}
+
+impl Default for R1Config {
+    fn default() -> Self {
+        Self {
+            rot_pin: RotPinMode::Pinned,
+            rot_auto_heal: true,
+        }
+    }
+}
+
+fn validate_r1_config(r1: &R1Config) -> Result<()> {
+    if !matches!(r1.rot_pin, RotPinMode::Pinned | RotPinMode::Auto) {
+        bail!("r1.rot_pin must be `pinned` or `auto`");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1928,12 +2031,44 @@ imei2 = ""
     }
 
     #[test]
-    fn config_v1_migration_forces_os_version_auto() {
+    fn config_v2_downgrade_drops_server_and_preserves_os_version() {
         let mut table: toml::Table =
             toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
         table.insert(
             "version".to_string(),
-            toml::Value::Integer(i64::from(CONFIG_VERSION_V1)),
+            toml::Value::Integer(i64::from(CONFIG_VERSION_V2)),
+        );
+        table.insert(
+            "server".to_string(),
+            toml::Value::Table(
+                [("enabled".to_string(), toml::Value::Boolean(true))]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        table
+            .get_mut("trust")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert("os_version".to_string(), toml::Value::Integer(17));
+
+        let parsed = parse_config_file(&toml::to_string_pretty(&table).unwrap(), true).unwrap();
+        assert!(parsed.migrated);
+        assert_eq!(parsed.config_file.version, CURRENT_CONFIG_VERSION);
+        assert_eq!(
+            parsed.config_file.trust.os_version,
+            OsVersionSpec::Fixed(17)
+        );
+        assert!(!parsed.table.contains_key("server"));
+    }
+
+    #[test]
+    fn config_v1_is_current_and_preserves_explicit_settings() {
+        let mut table: toml::Table =
+            toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
+        table.insert(
+            "version".to_string(),
+            toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
         );
         table
             .get_mut("trust")
@@ -1949,48 +2084,61 @@ imei2 = ""
                 toml::Value::String("trace".to_string()),
             );
 
-        let parsed = parse_config_file(&toml::to_string_pretty(&table).unwrap(), true).unwrap();
-        assert!(parsed.migrated);
+        let parsed = parse_config_file(&toml::to_string_pretty(&table).unwrap(), false).unwrap();
+        assert!(!parsed.migrated);
         assert_eq!(parsed.config_file.version, CURRENT_CONFIG_VERSION);
-        assert_eq!(parsed.config_file.trust.os_version, OsVersionSpec::Auto);
+        assert_eq!(
+            parsed.config_file.trust.os_version,
+            OsVersionSpec::Fixed(17)
+        );
         assert_eq!(parsed.config_file.main.log_level, "trace");
     }
 
     #[test]
-    fn bootstrap_uses_latest_v2_instead_of_stale_migration_snapshot() {
+    fn bootstrap_downgrades_legacy_v2_and_drops_the_server_table() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("config.toml");
 
-        let legacy = ConfigFile {
-            version: CONFIG_VERSION_V1,
-            trust: RawTrustConfig {
-                os_version: OsVersionSpec::Fixed(16),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let stale = parse_config_file(&toml::to_string_pretty(&legacy).unwrap(), true).unwrap();
-        assert!(stale.migrated);
-        assert_eq!(stale.config_file.trust.os_version, OsVersionSpec::Auto);
-
-        let current = ConfigFile {
-            main: MainConfig {
-                log_level: "trace".to_string(),
-                ..Default::default()
-            },
-            trust: RawTrustConfig {
-                os_version: OsVersionSpec::Fixed(17),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let current_contents = toml::to_string_pretty(&current).unwrap();
-        fs::write(&path, &current_contents).unwrap();
+        let mut legacy: toml::Table =
+            toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
+        legacy.insert(
+            "version".to_string(),
+            toml::Value::Integer(i64::from(CONFIG_VERSION_V2)),
+        );
+        legacy.insert(
+            "server".to_string(),
+            toml::Value::Table(
+                [("enabled".to_string(), toml::Value::Boolean(true))]
+                    .into_iter()
+                    .collect(),
+            ),
+        );
+        legacy
+            .get_mut("trust")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert("os_version".to_string(), toml::Value::Integer(17));
+        legacy
+            .get_mut("main")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .insert(
+                "log_level".to_string(),
+                toml::Value::String("trace".to_string()),
+            );
+        let legacy_contents = toml::to_string_pretty(&legacy).unwrap();
+        fs::write(&path, &legacy_contents).unwrap();
 
         let loaded = bootstrap_config_file_to_path(&path).unwrap();
         assert_eq!(loaded.trust.os_version, OsVersionSpec::Fixed(17));
         assert_eq!(loaded.main.log_level, "trace");
-        assert_eq!(fs::read_to_string(path).unwrap(), current_contents);
+
+        let migrated: toml::Table = toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(
+            migrated.get("version").and_then(toml::Value::as_integer),
+            Some(i64::from(CURRENT_CONFIG_VERSION))
+        );
+        assert!(!migrated.contains_key("server"));
     }
 
     #[test]
@@ -2006,7 +2154,7 @@ imei2 = ""
             assert!(config_version(&table).is_err());
         }
 
-        for version in [0, CONFIG_VERSION_V1] {
+        for version in [0, CONFIG_VERSION_V2] {
             let mut table: toml::Table =
                 toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
             table.insert(
@@ -2022,7 +2170,7 @@ imei2 = ""
             toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
         future.insert(
             "version".to_string(),
-            toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION) + 1),
+            toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION + 3)),
         );
         let original = toml::to_string_pretty(&future).unwrap();
         fs::write(&path, &original).unwrap();

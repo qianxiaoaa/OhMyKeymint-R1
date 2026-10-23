@@ -82,9 +82,46 @@ def toml_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\") + '"'
 
 
+def find_clang_resource_include(prebuilt_lib_dir: Path) -> Path | None:
+    """Return <prebuilt>/lib/clang/<ver>/include if it exists.
+
+    bindgen needs the clang builtin headers (stddef.h and friends) when it goes
+    through libclang; without this include path any C++ header that pulls in
+    <stddef.h> fails with "stddef.h file not found".
+    """
+    clang_root = prebuilt_lib_dir / "clang"
+    if not clang_root.is_dir():
+        return None
+    versions = sorted((path for path in clang_root.iterdir() if path.is_dir()), reverse=True)
+    for version in versions:
+        include_dir = version / "include"
+        if include_dir.is_dir():
+            return include_dir
+    return None
+
+
+def find_bssl_sys_patch() -> Path:
+    """Path to the local bssl-sys used to override the crates.io placeholder.
+
+    Mirrors build.py: BORINGSSL_BUILD_DIR or ~/.cargo/boringssl/build.
+    """
+    configured = os.environ.get("BORINGSSL_BUILD_DIR")
+    build_dir = Path(configured).expanduser() if configured else Path.home() / ".cargo" / "boringssl" / "build"
+    return build_dir.resolve().parent / "rust" / "bssl-sys"
+
+
+# Note: the generated [env] block intentionally does not set BORINGSSL_BUILD_DIR.
+# bssl-sys reads it from a plain environment variable and a global key cannot
+# vary per target, so a static value would point x86_64 builds at the arm64
+# build tree. Tools that build a specific target (build.py, deploy_hot_update.py)
+# inject it themselves; leave the fallback (~/.cargo/boringssl/build) to the
+# arm64 build that the fallback happens to match.
+
+
 def render_config(ndk_root: Path, host_tag: str, api_level: int) -> str:
     bin_dir = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "bin"
     sysroot = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "sysroot"
+    prebuilt_lib_dir = ndk_root / "toolchains" / "llvm" / "prebuilt" / host_tag / "lib"
 
     exe_suffix = ".cmd" if host_tag.startswith("windows-") else ""
     ar_name = "llvm-ar.exe" if host_tag.startswith("windows-") else "llvm-ar"
@@ -102,8 +139,16 @@ def render_config(ndk_root: Path, host_tag: str, api_level: int) -> str:
     # sysroot should use slash, not backslash
     sysroot_with_slashes = str(sysroot).replace('\\', '/')
 
-    aarch64_bindgen = f"--sysroot={sysroot_with_slashes} -I{sysroot / 'usr' / 'include' / 'aarch64-linux-android'}"
-    x86_64_bindgen = f"--sysroot={sysroot_with_slashes} -I{sysroot / 'usr' / 'include' / 'x86_64-linux-android'}"
+    clang_include = find_clang_resource_include(prebuilt_lib_dir)
+    if clang_include is None:
+        raise FileNotFoundError(
+            "Unable to locate the NDK clang resource headers under "
+            f"{prebuilt_lib_dir / 'clang'}; bindgen would miss stddef.h."
+        )
+    clang_include_flags = f"-isystem {str(clang_include).replace(chr(92), '/')}"
+
+    aarch64_bindgen = f"--sysroot={sysroot_with_slashes} -I{sysroot / 'usr' / 'include' / 'aarch64-linux-android'} {clang_include_flags}"
+    x86_64_bindgen = f"--sysroot={sysroot_with_slashes} -I{sysroot / 'usr' / 'include' / 'x86_64-linux-android'} {clang_include_flags}"
 
     return "\n".join(
         [
@@ -123,6 +168,7 @@ def render_config(ndk_root: Path, host_tag: str, api_level: int) -> str:
             "[env]",
             f"ANDROID_NDK_ROOT = {{ value = {toml_string(str(ndk_root))}, force = true }}",
             'BORINGSSL_RUST_CPPLIB = { value = "c++_static", force = true }',
+            f'LIBCLANG_PATH = {{ value = {toml_string(str(prebuilt_lib_dir)) }, force = true }}',
             f"CC_aarch64_linux_android = {toml_string(str(aarch64_clang))}",
             f"CXX_aarch64_linux_android = {toml_string(str(aarch64_clangxx))}",
             f"AR_aarch64_linux_android = {toml_string(str(llvm_ar))}",
@@ -132,6 +178,9 @@ def render_config(ndk_root: Path, host_tag: str, api_level: int) -> str:
             f"CXX_x86_64_linux_android = {toml_string(str(x86_64_clangxx))}",
             f"AR_x86_64_linux_android = {toml_string(str(llvm_ar))}",
             f'BINDGEN_EXTRA_CLANG_ARGS_x86_64_linux_android = {toml_string(x86_64_bindgen)}',
+            "",
+            "[patch.crates-io]",
+            f"bssl-sys = {{ path = {toml_string(str(find_bssl_sys_patch()))} }}",
             "",
         ]
     )

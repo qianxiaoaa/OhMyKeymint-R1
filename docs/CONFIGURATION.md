@@ -145,12 +145,28 @@ using Material Color Utilities and MIUIX's role mapping, including neutral
 unchecked controls and themed surfaces. Rainbow and FruitSalad use SPEC_2021,
 as SPEC_2025 does not define those styles. If system colors cannot be read,
 the current session retains its last resolved colors, or uses the static MIUIX
-palette when none are available. No wallpaper data or new persistent cache is created.
+palette when none are available. No system wallpaper data or new persistent
+cache is created.
 Turning Monet off restores the static MIUIX light/dark palette while remembering
 the selected accent for the next time Monet is enabled. Bar blur, floating
 navigation, and liquid glass are optional and remain disabled until selected;
 each option is independent; liquid glass only affects the floating navigation
 surface and does not enable floating navigation by itself.
+
+The Settings page also provides a page background wallpaper. The packaged
+picture ships inside the module webroot, so the background never needs a network
+fetch. **Background wallpaper** opens the built-in shared-storage browser for a
+JPG, PNG or WebP image of at most 10 MiB and copies the chosen file on the
+device instead of streaming it through the WebUI. Open-with-another-app still
+uses the system picker when a real path is unavailable. The image is validated
+by its file header, kept at `/data/misc/keystore/omk/data/wallpaper.bin`, and published into
+the webroot under a module-chosen `assets/wallpaper/custom.<ext>` name, so it
+survives a module update and is restored at the next start. Cards, sheets,
+dialogs and dropdowns become translucent glass over the picture, and a dimming
+layer sits between the picture and the content to keep text readable; where the
+WebView cannot blur a surface, that surface stays nearly opaque instead.
+**Restore the default wallpaper** deletes both copies and returns to the
+packaged picture.
 The bottom navigation stays anchored above the host's bottom safe area while
 pages switch and restore their own scroll positions. Interface scaling changes
 the bar's size without scaling the host's safe-area spacing. Top and side
@@ -322,6 +338,12 @@ The complete candidate is atomically stored at
 failed write leaves the previous profile unchanged. The WebUI controls Java
 Build spoofing and native property spoofing independently for Google Play
 services through **Spoof Build** and **Spoof Props**; both default to on.
+While either switch is on, OMK's own KeyMint surfaces follow the profile's
+identity: key attestation reports the profile's brand, device, product,
+manufacturer, and model, and the reported KeyMint hardware info is derived
+from the same fields. Telephony identifiers and the serial stay bound to the
+configured device, and the reported KeyMint API version keeps following the
+device VINTF. With both switches off the configured device identity is used.
 A separate **Spoof Build (Play Store)** switch defaults to off and applies all
 12 string fields listed above inside the Play Store, including model, product,
 device, fingerprint, release, build ID, and security patch. It does not change
@@ -388,9 +410,10 @@ software TA takes over the vendor HAL. With the relay disabled, supported
 operations use the local ledger; with the relay enabled, they use the configured
 server. The panel also exposes editable relay URL, B device
 ID, token, and optional UID mapping fields, plus a switch to accept self-signed
-TLS certificates. Existing nonempty relay identity values are preserved; empty
-URL, B device ID, or token fields are filled with their built-in defaults when
-saved. Both switches are disabled by default, TLS certificate validation
+TLS certificates. Relay identity values are stored exactly as entered; the
+module ships no built-in relay defaults, so a URL, B device ID, and token must
+be supplied before the relay can be enabled. Both switches are disabled by
+default, TLS certificate validation
 remains enabled unless explicitly disabled, and the default UID map is empty.
 Opening or cancelling the panel does not write configuration. The software TA
 cannot be enabled while Tencent Soter Beta is enabled. Relay preferences and
@@ -402,8 +425,8 @@ token even when the software TA is disabled.
 Saving atomically writes the relay fields to
 `/data/misc/keystore/omk/data/soterta/remote.conf` with mode `0600`, using the
 `remote_enabled=` key. The independent software TA flag is stored in
-`/data/misc/keystore/omk/data/soterta/enabled`. Built-in credentials are part of
-the module and are not secret storage; custom saved configuration is device-local.
+`/data/misc/keystore/omk/data/soterta/enabled`. The module contains no built-in
+relay credentials; the saved relay identity is device-local.
 When both switches are enabled, supported operations use the configured relay;
 relay failures return the stock dead-TA reply and never fall back to local
 material. Disabling only the relay keeps the software TA active with its local
@@ -514,6 +537,59 @@ The reload preserves ordinary application signing keys, including passkey
 credentials. Only dedicated `ATTEST_KEY` entries tied to the previous keybox
 are retired.
 
+### Automatic mirror refresh
+
+Once per day after boot, OMK tries the three community GitHub mirrors below in
+priority order and installs the first archive that passes the complete
+`KeyBox` validation, exactly as if it had been installed through **Change
+Keybox**:
+
+1. `Yurii0307/yurikey` — a single file served from `raw.githubusercontent.com`.
+2. `rahmatsobrian/keybox-collection` — a source tarball of plain UTF-8 XML.
+3. `shall0e/KeyboxHub` — a source tarball of UTF-16LE XML.
+
+Only `https` URLs on `raw.githubusercontent.com`, `codeload.github.com`, or
+`github.com` are accepted. Each download is bounded (64 KiB for the single
+file, 8 MiB for either tarball), and a tarball is scanned for at most 4096
+entries with at most 64 XML candidates. A result with the same SHA-256 as the
+installed keybox is left untouched. Every automatically installed or skipped
+outcome is recorded in `/data/misc/keystore/omk/data/mirror_keybox.toml` and
+shown in the WebUI cloud status. The R1 boot self-check posts a live heartbeat
+to the fixed report endpoint and writes the manager description from that
+result together with a running KeyMint process. GitHub keybox mirrors stay on
+the refresh and WebUI status path. The refresh only fetches while the module
+runs; it never replaces a keybox you installed manually, because the installed
+file is left as-is unless one of the mirrors actually changes the SHA-256.
+
+The same fixed mirrors can be pulled on demand from **Tools → Cloud refresh
+Keybox**. The command runs the identical fetch-and-validate path
+(`--webui-refresh-mirror-keybox`), replaces the installed keybox when a
+mirror actually changed it, and reports the outcome (`applied`/`unchanged`/
+`failed`) back into the same state file.
+
+### Online heartbeat
+
+Once the system has booted, OMK reports a heartbeat to the fixed server
+endpoint `https://omk.5ijxa.com/api/omk/index.php?action=report` every 30
+minutes. The payload carries a per-install `module_id` (`omk-` plus 32
+lowercase hex digits, generated once and stored under
+`/data/misc/keystore/omk/data/online_report.toml`) and the SHA-256 of the
+currently installed keybox. The server keeps the device online for six hours
+since the last heartbeat, which is what the homepage device count shows.
+
+The endpoint host is fixed at compile time and is the only host the heartbeat
+may reach; the request is `https`-only with a 20-second timeout, and a server-
+echoed interval outside 300..86400 seconds is clamped. The server stores only
+the SHA-256 of the `module_id` as a dedup key, never the id. Failures are
+logged and retried on the next 30-minute tick, and the last outcome is
+recorded in the same state file.
+
+The **Home** tab shows a **Cloud status** card with the last mirror fetch
+(time, source, outcome, error) and the last heartbeat (module id, report time,
+interval). Its **Refresh** button re-reads both state files through
+`--webui-get-cloud-status` without triggering a new mirror fetch or a new
+heartbeat.
+
 ## `config.toml`
 
 ### Complete annotated example
@@ -526,8 +602,8 @@ examples; keep the values from the active file unless you intend to change the
 reported identity.
 
 ```toml
-# Configuration format. Keep this at 2.
-version = 2
+# Configuration format. Keep this at 1.
+version = 1
 
 [main]
 # The supported service connection. Keep this value unchanged.
@@ -587,18 +663,20 @@ imei2 = ""
 #### `version`
 
 This identifies the configuration format. The supported value is the integer
-`2`. It is not an Android version or an OMK release number. Do not increment it;
+`1`. It is not an Android version or an OMK release number. Do not increment it;
 the current file should keep this value unchanged. Live reload rejects other
 values and keeps the last valid runtime configuration.
 
-At keymint startup, a missing `version` is treated as `0`. Versions `0` and `1`
-are migrated in place to `2` before the service starts, and `os_version` is set
-to `"auto"` so later Android upgrades are detected on the next keymint start.
+At keymint startup, a missing `version` is treated as `0`. Version `0` is
+migrated in place to `1` before the service starts, and `os_version` is set to
+`"auto"` so later Android upgrades are detected on the next keymint start.
 Startup also removes the obsolete `trust_record`. For version `0`, missing
 patch-level fields inherit the configured `security_patch`. Other configured
-and unknown values are preserved. Migration is not performed during live
-reload, so restart keymint to migrate an older file. An unsupported future
-version is never overwritten.
+and unknown values are preserved. An older `2` (the prerelease format that
+carried an optional `[server]` table) is downgraded to `1` and loses only that
+now-unused table. Migration is not performed during live reload, so restart
+keymint to migrate an older file. An unsupported future version is never
+overwritten.
 
 ### `[main]`
 
@@ -994,6 +1072,34 @@ fields.
 
 The MEID used by devices that provide one. Many devices have no MEID, so an
 empty value is valid. Its absence does not invalidate an available IMEI.
+
+### `[r1]`
+
+OMK-R1-specific hardening. The table is optional; the defaults below apply when
+it is absent.
+
+```toml
+[r1]
+# Root of trust pinning: "pinned" or "auto".
+rot_pin = "pinned"
+# Clear key blobs bound to a previous root of trust at startup.
+rot_auto_heal = true
+```
+
+#### `rot_pin`
+
+How the verified boot root of trust is handled.
+
+- `pinned` (default): OMK pins the root of trust from verified boot metadata
+  into `config.toml` at startup, so a rollback or a different boot state does
+  not silently change the reported root of trust.
+- `auto`: the root of trust follows the live verified boot state each boot.
+
+#### `rot_auto_heal`
+
+When `true` (default), OMK clears key blobs that were created under a previous
+root of trust instead of letting them keep returning `InvalidKeyBlob` forever.
+Set it to `false` to keep such blobs and surface the error to the app.
 
 ### `config.toml` apply summary
 

@@ -1,7 +1,6 @@
 # shellcheck disable=SC2034
 SKIPUNZIP=1
 
-SONAME="Oh My Keymint"
 SUPPORTED_ABIS="arm64 x64"
 MIN_SDK=29
 
@@ -11,7 +10,7 @@ if [ "$BOOTMODE" ] && [ "$KSU" ]; then
   if [ "$(which magisk)" ]; then
     ui_print "*********************************************************"
     ui_print "! Multiple root implementation is NOT supported!"
-    ui_print "! Please uninstall Magisk before installing Oh My Keymint"
+    ui_print "! Please uninstall Magisk before installing Oh My Keymint-R1"
     abort    "*********************************************************"
   fi
 elif [ "$BOOTMODE" ] && [ "$MAGISK_VER_CODE" ]; then
@@ -23,8 +22,7 @@ else
   abort    "*********************************************************"
 fi
 
-VERSION=$(grep_prop version "${TMPDIR}/module.prop")
-ui_print "- Installing $SONAME $VERSION"
+ui_print "- Installing $(grep_prop name "${TMPDIR}/module.prop")"
 
 # check architecture
 support=false
@@ -57,6 +55,10 @@ if [ ! -f "$TMPDIR/verify.sh" ]; then
   abort    "*********************************************************"
 fi
 . "$TMPDIR/verify.sh"
+# Extract customize.sh and verify.sh into a throwaway directory purely to run
+# their member sha256 checksums; the expanded copies are not installed. If the
+# download was truncated the abort below stops installation before anything is
+# written to the module directory.
 extract "$ZIPFILE" 'customize.sh'  "$TMPDIR/.vunzip"
 extract "$ZIPFILE" 'verify.sh'     "$TMPDIR/.vunzip"
 
@@ -120,6 +122,7 @@ chmod 755 "$MODPATH/zygisk/$ZYGISK_ABI.so"
 CONFIG_DIR=/data/adb/omk
 mkdir -p "$CONFIG_DIR"
 rm -f "$CONFIG_DIR/restart.keymint" "$CONFIG_DIR/restart.injector" "$CONFIG_DIR/restart.all"
+rm -f /data/misc/keystore/omk/data/restart.keymint /data/misc/keystore/omk/data/restart.injector
 rm -f "$CONFIG_DIR/keymint" "$CONFIG_DIR/inject" "$CONFIG_DIR/injector" # clean up old hot-update binaries
 
 if [ ! -e "$CONFIG_DIR/omkdata" ] && [ ! -L "$CONFIG_DIR/omkdata" ]; then

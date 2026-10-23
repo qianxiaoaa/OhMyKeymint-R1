@@ -48,7 +48,7 @@
     <string name="pif_current_config">目前設定</string>
     <string name="pif_preview">瀏覽器預覽使用範例資料，不會修改手機設定。</string>
     <string name="pif_spoof_build">Spoof Build</string>
-    <string name="pif_spoof_build_desc">僅向 Google Play 服務套用 Pixel 欄位及初始 SDK，不修改目前 Android SDK。</string>
+    <string name="pif_spoof_build_desc">向 Google Play 服務套用 Pixel 欄位及初始 SDK，並讓 KeyMint 證明身分與其對齊；不修改目前 Android SDK。</string>
     <string name="pif_spoof_props">Spoof Props</string>
     <string name="pif_spoof_props_desc">僅替換 Google Play 服務內的指定屬性讀取，不修改全域或 Play 商店屬性。</string>
     <string name="pif_spoof_vending">Spoof Build（Play Store）</string>

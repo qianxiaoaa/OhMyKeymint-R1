@@ -19,7 +19,7 @@ use zygisk_api::api::{V4, ZygiskApi};
 
 mod wire;
 
-pub(crate) const PACKAGE: &str = "com.tencent.soter.soterserver";
+pub(crate) const PACKAGE: &str = pif_common::soter::TARGET_PACKAGE;
 const DESCRIPTOR: &CStr = c"com.tencent.soter.soterserver.ISoterService";
 const MAX_READ_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = MAX_READ_BYTES;

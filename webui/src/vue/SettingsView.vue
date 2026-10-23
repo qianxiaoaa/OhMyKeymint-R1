@@ -8,6 +8,7 @@ import {
   MiuixDropdownPreference,
   MiuixIcon,
   MiuixIconButton,
+  MiuixProgressIndicator,
   MiuixRadioButtonPreference,
   MiuixSlider,
   MiuixSmallTitle,
@@ -16,7 +17,7 @@ import {
   MiuixTopAppBar,
   type MiuixDropdownItem,
 } from 'miuix-vue'
-import { Background, Close, Layers, Sidebar, Theme, Translate, Tune } from 'miuix-vue/icons'
+import { Background, Close, Image, Layers, Reset, Sidebar, Theme, Translate, Tune } from 'miuix-vue/icons'
 import {
   ACCENT_COLORS,
   ACCENT_SEEDS,
@@ -31,6 +32,7 @@ import {
   type PaletteStyle,
 } from '../appearance'
 import { i18n } from '../i18n'
+import { wallpaper } from '../wallpaper'
 
 interface Choice<T extends string> {
   value: T
@@ -90,6 +92,22 @@ const selectedLanguageLabel = computed(() =>
   languageItems.value[languageIndex.value] ?? translate('settings_language_auto', 'Follow system language'),
 )
 
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+  return `${Math.max(1, Math.round(bytes / 1024))} KiB`
+}
+
+const wallpaperSummary = computed(() => {
+  if (wallpaper.status !== '') return wallpaper.status
+  if (wallpaper.loading) return translate('settings_wallpaper_loading', 'Checking the wallpaper...')
+  const state = wallpaper.state
+  if (state === null || !state.custom) {
+    return translate('settings_wallpaper_default_desc', 'The packaged picture is in use')
+  }
+  const size = state.bytes > 0 ? ` · ${formatSize(state.bytes)}` : ''
+  return `${translate('settings_wallpaper_custom_desc', 'A custom picture is installed')}${size}`
+})
+
 const modeIndex = ref(Math.max(0, APPEARANCE_MODES.indexOf(appearance.mode)))
 const languageIndex = ref(Math.max(0, languageCodes.indexOf(i18n.preference)))
 const accentIndex = ref(Math.max(0, ACCENT_COLORS.indexOf(appearance.accent)))
@@ -102,6 +120,8 @@ const languageSheetOpen = ref(false)
 const emit = defineEmits<{
   'overlay-open': []
   'overlay-close': []
+  'choose-wallpaper': []
+  'reset-wallpaper': []
 }>()
 
 watch(languageSheetOpen, open => {
@@ -330,6 +350,44 @@ onBeforeUnmount(appearance.onChange(syncAppearanceState))
                 <span class="settings-preference-icon"><MiuixIcon :icon="Theme" :size="22" /></span>
               </template>
             </MiuixSwitchPreference>
+          </template>
+
+          <div class="settings-divider"><MiuixDivider /></div>
+
+          <MiuixArrowPreference
+            :title="translate('settings_wallpaper', 'Background wallpaper')"
+            :summary="wallpaperSummary"
+            :disabled="wallpaper.busy"
+            @click="emit('choose-wallpaper')"
+          >
+            <template #start>
+              <span class="settings-preference-icon">
+                <MiuixProgressIndicator
+                  v-if="wallpaper.busy"
+                  type="circular"
+                  :size="22"
+                  :stroke-width="2.5"
+                />
+                <MiuixIcon v-else :icon="Image" :size="22" />
+              </span>
+            </template>
+          </MiuixArrowPreference>
+
+          <template v-if="wallpaper.state?.custom">
+            <div class="settings-divider"><MiuixDivider /></div>
+            <MiuixArrowPreference
+              :title="translate('settings_wallpaper_reset', 'Restore the default wallpaper')"
+              :summary="translate(
+                'settings_wallpaper_reset_desc',
+                'Remove the custom picture from this device',
+              )"
+              :disabled="wallpaper.busy"
+              @click="emit('reset-wallpaper')"
+            >
+              <template #start>
+                <span class="settings-preference-icon"><MiuixIcon :icon="Reset" :size="22" /></span>
+              </template>
+            </MiuixArrowPreference>
           </template>
         </MiuixCard>
       </section>

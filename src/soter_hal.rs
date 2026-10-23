@@ -36,11 +36,6 @@ const MAX_DEVICE_ID_BYTES: usize = 512;
 const MAX_UID_MAP_BYTES: usize = 4096;
 // Includes JSON escaping and field names; keep the WebUI transport cap in sync.
 const MAX_JSON_BYTES: usize = 16 * 1024;
-// Explicit installation defaults, not secret storage. Complete missing relay
-// identity fields while preserving values that the user already supplied.
-const DEFAULT_RELAY_URL: &str = "http://110.40.170.96:10886";
-const DEFAULT_RELAY_DEVICE_ID: &str = "device-b-c3f204aa";
-const DEFAULT_RELAY_TOKEN: &str = "aY7kRSDDR6PMmamlKwtgf7mQgr-X5uFd";
 
 /// The field order is part of the WebUI/native bridge contract.  Keep this in
 /// sync with `webui/src/cli.ts` so responses remain canonical JSON.
@@ -59,19 +54,6 @@ pub struct Config {
 }
 
 impl Config {
-    fn with_webui_defaults(mut self) -> Self {
-        if self.url.is_empty() {
-            self.url = DEFAULT_RELAY_URL.to_string();
-        }
-        if self.device_id.is_empty() {
-            self.device_id = DEFAULT_RELAY_DEVICE_ID.to_string();
-        }
-        if self.token.is_empty() {
-            self.token = DEFAULT_RELAY_TOKEN.to_string();
-        }
-        self
-    }
-
     pub fn validate(&self) -> Result<()> {
         validate_text("url", &self.url, MAX_URL_BYTES, true)?;
         validate_text("token", &self.token, MAX_TOKEN_BYTES, true)?;
@@ -162,7 +144,6 @@ impl Config {
                 _ => bail!("unknown Soter HAL configuration key"),
             }
         }
-        let config = config.with_webui_defaults();
         config.validate()?;
         Ok(config)
     }
@@ -274,7 +255,7 @@ fn file_contents(config: &Config) -> String {
 }
 
 pub fn state_json() -> Result<String> {
-    let config = Config::load()?.with_webui_defaults();
+    let config = Config::load()?;
     serde_json::to_string(&config).context("failed to serialize Soter HAL state")
 }
 
@@ -344,7 +325,6 @@ fn refresh_watchdog(config_enabled: bool) -> Result<()> {
 }
 
 pub fn save(config: Config) -> Result<()> {
-    let config = config.with_webui_defaults();
     config.validate()?;
     ensure_config_dir()?;
     let contents = file_contents(&config);
@@ -383,15 +363,15 @@ mod tests {
     }
 
     #[test]
-    fn webui_defaults_are_disabled_and_ready_to_enable() {
-        let mut config = Config::default().with_webui_defaults();
+    fn default_config_is_disabled_and_takeover_needs_no_relay_identity() {
+        let mut config = Config::default();
         assert!(!config.enabled);
         assert!(!config.remote_enabled);
         assert!(!config.tls_insecure);
         assert!(config.uid_map.is_empty());
-        assert!(config.url == DEFAULT_RELAY_URL);
-        assert!(config.device_id == DEFAULT_RELAY_DEVICE_ID);
-        assert!(config.token == DEFAULT_RELAY_TOKEN);
+        assert!(config.url.is_empty());
+        assert!(config.device_id.is_empty());
+        assert!(config.token.is_empty());
         config.enabled = true;
         config.validate().unwrap();
         let json = serde_json::to_string(&config).unwrap();
@@ -399,9 +379,9 @@ mod tests {
     }
 
     #[test]
-    fn webui_defaults_preserve_every_existing_relay_identity() {
-        // A partial custom configuration receives defaults only for missing
-        // fields; values supplied by the user remain unchanged.
+    fn webui_transport_preserves_every_supplied_relay_identity() {
+        // Relay identity comes only from explicit configuration; the save
+        // transport never invents or rewrites user-supplied values.
         for fields in 1..=7 {
             let config = Config {
                 url: if fields & 1 != 0 {
@@ -421,81 +401,64 @@ mod tests {
                 },
                 ..Config::default()
             };
-            let resolved = config.with_webui_defaults();
-            assert_eq!(
-                resolved.url,
-                if fields & 1 != 0 {
-                    "https://relay.example.test"
-                } else {
-                    DEFAULT_RELAY_URL
-                }
-            );
-            assert_eq!(
-                resolved.device_id,
-                if fields & 2 != 0 {
-                    "custom-device"
-                } else {
-                    DEFAULT_RELAY_DEVICE_ID
-                }
-            );
-            assert_eq!(
-                resolved.token,
-                if fields & 4 != 0 {
-                    "custom-token"
-                } else {
-                    DEFAULT_RELAY_TOKEN
-                }
-            );
+            let payload = BASE64_STANDARD.encode(serde_json::to_string(&config).unwrap());
+            assert_eq!(Config::parse_base64(&payload).unwrap(), config);
         }
     }
 
     #[test]
-    fn partial_builtin_config_can_be_loaded_enabled_and_saved() {
-        for remote_enabled in [false, true] {
-            for fields in 0..=7 {
-                let partial = Config {
-                    remote_enabled,
-                    url: if fields & 1 != 0 {
-                        DEFAULT_RELAY_URL.into()
-                    } else {
-                        String::new()
-                    },
-                    device_id: if fields & 2 != 0 {
-                        DEFAULT_RELAY_DEVICE_ID.into()
-                    } else {
-                        String::new()
-                    },
-                    token: if fields & 4 != 0 {
-                        DEFAULT_RELAY_TOKEN.into()
-                    } else {
-                        String::new()
-                    },
-                    ..Config::default()
-                };
-                let resolved = Config::parse_file(&file_contents(&partial)).unwrap();
-                assert!(!resolved.enabled);
-                assert_eq!(resolved.remote_enabled, remote_enabled);
-                assert!(resolved.url == DEFAULT_RELAY_URL);
-                assert!(resolved.device_id == DEFAULT_RELAY_DEVICE_ID);
-                assert!(resolved.token == DEFAULT_RELAY_TOKEN);
+    fn relay_identity_is_required_only_when_forwarding_is_enabled() {
+        for fields in 0..=7 {
+            let partial = Config {
+                remote_enabled: true,
+                url: if fields & 1 != 0 {
+                    "https://relay.example.test".into()
+                } else {
+                    String::new()
+                },
+                device_id: if fields & 2 != 0 {
+                    "custom-device".into()
+                } else {
+                    String::new()
+                },
+                token: if fields & 4 != 0 {
+                    "custom-token".into()
+                } else {
+                    String::new()
+                },
+                ..Config::default()
+            };
+            let contents = file_contents(&partial);
+            if fields == 7 {
+                let resolved = Config::parse_file(&contents).unwrap();
+                assert!(resolved == partial);
                 let payload = BASE64_STANDARD.encode(serde_json::to_string(&resolved).unwrap());
                 let saved = Config::parse_base64(&payload).unwrap();
                 assert!(Config::parse_file(&file_contents(&saved)).unwrap() == resolved);
+            } else {
+                assert!(Config::parse_file(&contents).is_err());
             }
         }
+        let resolved = Config::parse_file(&file_contents(&Config::default())).unwrap();
+        assert!(!resolved.enabled);
+        assert!(!resolved.remote_enabled);
+        assert!(resolved.url.is_empty());
+        assert!(resolved.device_id.is_empty());
+        assert!(resolved.token.is_empty());
     }
 
     #[test]
-    fn webui_defaults_preserve_advanced_settings() {
+    fn webui_transport_preserves_advanced_settings() {
         let config = Config {
             tls_insecure: true,
             uid_map: "10001=10002".into(),
             ..Config::default()
-        }
-        .with_webui_defaults();
-        assert!(!config.enabled);
-        assert!(config.tls_insecure);
-        assert_eq!(config.uid_map, "10001=10002");
+        };
+        let payload = BASE64_STANDARD.encode(serde_json::to_string(&config).unwrap());
+        let transported = Config::parse_base64(&payload).unwrap();
+        assert!(!transported.enabled);
+        assert!(transported.tls_insecure);
+        assert_eq!(transported.uid_map, "10001=10002");
     }
 
     #[test]
@@ -536,19 +499,19 @@ mod tests {
 
     #[test]
     fn file_parser_accepts_legacy_and_split_switches() {
-        let legacy = Config::parse_file(&format!(
-            "enabled=true\nurl={DEFAULT_RELAY_URL}\ndevice_id={DEFAULT_RELAY_DEVICE_ID}\ntoken={DEFAULT_RELAY_TOKEN}\n"
-        ))
-        .unwrap();
+        let identity = "url=https://relay.example.test\ntoken=relay-token\ndevice_id=soter-b\n";
+        let legacy = Config::parse_file(&format!("enabled=true\n{identity}")).unwrap();
         assert!(legacy.remote_enabled);
         assert!(!legacy.enabled);
 
-        let split = Config::parse_file(&format!(
-            "remote_enabled=true\nurl={DEFAULT_RELAY_URL}\ndevice_id={DEFAULT_RELAY_DEVICE_ID}\ntoken={DEFAULT_RELAY_TOKEN}\n"
-        ))
-        .unwrap();
+        let split = Config::parse_file(&format!("remote_enabled=true\n{identity}")).unwrap();
         assert!(split.remote_enabled);
         assert!(!split.enabled);
+
+        // Forwarding switches without an explicit relay identity no longer
+        // resolve to baked-in defaults and must fail closed.
+        assert!(Config::parse_file("enabled=true\n").is_err());
+        assert!(Config::parse_file("remote_enabled=true\n").is_err());
     }
 
     #[test]
@@ -599,18 +562,26 @@ mod tests {
         assert!(!local.remote_enabled);
         fs::remove_file(&flag_path).unwrap();
 
-        fs::write(&config_path, "enabled=true\n").unwrap();
+        fs::write(
+            &config_path,
+            "enabled=true\nurl=https://relay.example.test\ntoken=relay-token\ndevice_id=soter-b\n",
+        )
+        .unwrap();
         let legacy = Config::load_from_paths(&config_path, &flag_path).unwrap();
         assert!(legacy.enabled);
         assert!(legacy.remote_enabled);
 
-        fs::write(&config_path, "remote_enabled=true\n").unwrap();
+        fs::write(
+            &config_path,
+            "remote_enabled=true\nurl=https://relay.example.test\ntoken=relay-token\ndevice_id=soter-b\n",
+        )
+        .unwrap();
         let prepared = Config::load_from_paths(&config_path, &flag_path).unwrap();
         assert!(!prepared.enabled);
         assert!(prepared.remote_enabled);
-        assert_eq!(prepared.url, DEFAULT_RELAY_URL);
-        assert_eq!(prepared.device_id, DEFAULT_RELAY_DEVICE_ID);
-        assert!(prepared.token == DEFAULT_RELAY_TOKEN);
+
+        fs::write(&config_path, "remote_enabled=true\n").unwrap();
+        assert!(Config::load_from_paths(&config_path, &flag_path).is_err());
 
         fs::write(&flag_path, b"1\n").unwrap();
         fs::write(&config_path, "remote_enabled=false\n").unwrap();

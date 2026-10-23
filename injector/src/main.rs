@@ -238,14 +238,11 @@ pub extern "C" fn entry(handle: *const c_void) -> bool {
     log::set_max_level(config.main.log_level_filter());
     log_runtime_identity("Payload");
     log::info!(
-        "Injected library entry called! Handle: {:?}, build_id={}, build_target={}, runtime_arch={}, current_exe={}",
+        "Injected library entry called! Handle: {:?}, build_id={}, build_target={}, runtime_arch={}",
         handle,
         utils::build_id(),
         utils::build_target(),
         std::env::consts::ARCH,
-        utils::current_exe_path()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string()),
     );
     if let Err(error) = ipc::install_direct_rpc_session() {
         error!("failed to initialize OMK RPC session: {error:#}");
